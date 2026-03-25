@@ -36,6 +36,7 @@ const SEARCH_PANEL_H: f32 = 40.0;
 pub enum EditorAction {
     Edit,
     CursorMoved,
+    MouseDown(iced::Point),
 }
 
 // ─── Widget ───────────────────────────────────────────────────────────────────
@@ -173,10 +174,10 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                 // Fold indicator
                 if self.buffer.folds.is_foldable(li) {
                     let fx = b.x + gw - FOLD_COL_W + 2.0;
-                    let fy = y + LINE_H / 2.0 - 5.0;
+                    let _fy = y + LINE_H / 2.0 - 5.0;
                     let collapsed = self.buffer.folds.is_collapsed_start(li);
                     let sym = if collapsed { "▶" } else { "▼" };
-                    draw_text(renderer,sym, fx, fy, th.fold_indicator, FOLD_COL_W);
+                    draw_text(renderer,sym, fx, y, th.fold_indicator, FOLD_COL_W);
                 }
 
                 // Collapsed indicator background
@@ -423,7 +424,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     }
 
                     st.is_dragging = true;
-                    shell.publish((self.on_action)(EditorAction::CursorMoved));
+                    shell.publish((self.on_action)(EditorAction::MouseDown(pos)));
                     shell.capture_event();
                     return;
                 } else {
@@ -477,11 +478,11 @@ impl<'a, Message: Clone + 'a> From<SqlEditor<'a, Message>> for Element<'a, Messa
 // ─── Drawing helpers ──────────────────────────────────────────────────────────
 
 fn fill(r: &mut Renderer, rect: Rectangle, color: Color) {
-    r.fill_quad(renderer::Quad { bounds: rect, border: iced::Border::default(), shadow: iced::Shadow::default(), snap: false }, color);
+    r.fill_quad(renderer::Quad { bounds: rect, border: iced::Border::default(), shadow: iced::Shadow::default(), snap: true }, color);
 }
 
 fn fill_r(r: &mut Renderer, rect: Rectangle, color: Color, radius: f32) {
-    r.fill_quad(renderer::Quad { bounds: rect, border: iced::Border { radius: radius.into(), ..Default::default() }, shadow: iced::Shadow::default(), snap: false }, color);
+    r.fill_quad(renderer::Quad { bounds: rect, border: iced::Border { radius: radius.into(), ..Default::default() }, shadow: iced::Shadow::default(), snap: true }, color);
 }
 
 fn draw_text(r: &mut Renderer, content: &str, x: f32, y: f32, color: Color, max_w: f32) {

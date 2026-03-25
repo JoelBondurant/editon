@@ -244,6 +244,14 @@ impl App {
 
     fn update(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
+            Msg::Action(EditorAction::MouseDown(pos)) => {
+                let cursor_pos = self.pos_from_pixel(pos);
+                self.buffer.selection.anchor = cursor_pos;
+                self.buffer.selection.head = cursor_pos;
+                self.is_dragging = true;
+                self.click_count = 1;
+                self.update_status();
+            }
             Msg::Action(_) => {}
 
             Msg::MouseMove(pos) => {
@@ -371,7 +379,12 @@ impl App {
                                 "z" => self.buffer.undo(),
                                 "y" => self.buffer.redo(),
                                 "d" => self.buffer.duplicate_line(),
-                                "c" => { let _ = self.buffer.copy(); }
+                                "c" => {
+                                    let text = self.buffer.copy();
+                                    if !text.is_empty() {
+                                        return iced::clipboard::write(text);
+                                    }
+                                }
                                 "x" => { let _ = self.buffer.cut(); }
                                 "v" => {
                                     let clip = self.buffer.clipboard.clone();
