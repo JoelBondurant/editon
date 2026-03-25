@@ -47,7 +47,7 @@ impl SyntaxLanguage {
 // ─── Highlighter ──────────────────────────────────────────────────────────────
 
 pub struct Highlighter {
-    parser: Parser,
+    parser: Option<Parser>,
     tree: Option<Tree>,
     pub tokens: Vec<SyntaxToken>,
     pub language: SyntaxLanguage,
@@ -55,68 +55,175 @@ pub struct Highlighter {
 
 impl Highlighter {
     pub fn new(language: SyntaxLanguage) -> Self {
-        let mut parser = Parser::new();
-        let ts_lang = match language {
-            SyntaxLanguage::Sql => Language::from(tree_sitter_sql::LANGUAGE),
-            SyntaxLanguage::Rust => Language::from(tree_sitter_rust::LANGUAGE),
+        let parser = match language {
+            SyntaxLanguage::Sql => None,
+            SyntaxLanguage::Rust => {
+                let mut p = Parser::new();
+                let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+                p.set_language(&ts_lang).expect("failed to set Rust language");
+                Some(p)
+            }
         };
-        parser.set_language(&ts_lang).expect("failed to set language");
-        Self {
-            parser,
-            tree: None,
-            tokens: Vec::new(),
-            language,
-        }
+        Self { parser, tree: None, tokens: Vec::new(), language }
     }
 
     pub fn parse(&mut self, text: &str) {
-        self.tree = self.parser.parse(text, None);
-        self.rehighlight();
+        match self.language {
+            SyntaxLanguage::Sql => {
+                self.tree = None;
+                self.tokens = tokenize_sql(text);
+            }
+            SyntaxLanguage::Rust => {
+                if let Some(ref mut p) = self.parser {
+                    self.tree = p.parse(text, None);
+                }
+                let language = self.language;
+                let mut tokens = Vec::new();
+                if let Some(ref tree) = self.tree {
+                    walk_tokens(tree.root_node(), language, &mut tokens);
+                }
+                self.tokens = tokens;
+            }
+        }
     }
 
     pub fn tree(&self) -> Option<&Tree> {
         self.tree.as_ref()
     }
+}
 
-    fn rehighlight(&mut self) {
-        self.tokens.clear();
-        if let Some(ref tree) = self.tree {
-            self.walk(tree.root_node());
-        }
-    }
+// ─── Rust tree-sitter walker ──────────────────────────────────────────────────
 
-    fn walk(&mut self, node: Node) {
-        if node.child_count() == 0 {
-            let kind = match self.language {
-                SyntaxLanguage::Sql => classify_sql(&node),
-                SyntaxLanguage::Rust => classify_rust(&node),
-            };
-            self.tokens.push(SyntaxToken {
-                byte_range: node.byte_range(),
-                kind,
-            });
-        } else {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    self.walk(child);
-                }
+fn walk_tokens(node: Node, language: SyntaxLanguage, tokens: &mut Vec<SyntaxToken>) {
+    if node.child_count() == 0 {
+        let kind = classify_rust(&node);
+        tokens.push(SyntaxToken { byte_range: node.byte_range(), kind });
+    } else {
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                walk_tokens(child, language, tokens);
             }
         }
     }
 }
 
-// ─── SQL classifier ───────────────────────────────────────────────────────────
+// ─── SQL manual tokenizer ─────────────────────────────────────────────────────
 
-fn classify_sql(node: &Node) -> TokenKind {
-    let kind = node.kind();
-    if node.is_error() || node.is_missing() {
-        return TokenKind::Error;
-    }
-    if kind.starts_with("keyword_") {
-        return TokenKind::Keyword;
+fn tokenize_sql(text: &str) -> Vec<SyntaxToken> {
+    let mut tokens = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // Whitespace
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+
+        // Line comment: --
+        if bytes[i..].starts_with(b"--") {
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
+            tokens.push(SyntaxToken { byte_range: start..i, kind: TokenKind::Comment });
+            continue;
+        }
+
+        // Block comment: /* */
+        if bytes[i..].starts_with(b"/*") {
+            let start = i;
+            i += 2;
+            loop {
+                if i + 1 >= bytes.len() { i = bytes.len(); break; }
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' { i += 2; break; }
+                i += 1;
+            }
+            tokens.push(SyntaxToken { byte_range: start..i, kind: TokenKind::Comment });
+            continue;
+        }
+
+        // Single-quoted string: '...'
+        if bytes[i] == b'\'' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' { i += 2; continue; }
+                if bytes[i] == b'\'' { i += 1; break; }
+                i += 1;
+            }
+            tokens.push(SyntaxToken { byte_range: start..i, kind: TokenKind::String });
+            continue;
+        }
+
+        // Double-quoted identifier: "..."
+        if bytes[i] == b'"' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'"' { i += 1; }
+            if i < bytes.len() { i += 1; }
+            tokens.push(SyntaxToken { byte_range: start..i, kind: TokenKind::Identifier });
+            continue;
+        }
+
+        // Number
+        if bytes[i].is_ascii_digit() || (bytes[i] == b'.' && i + 1 < bytes.len() && bytes[i+1].is_ascii_digit()) {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') { i += 1; }
+            tokens.push(SyntaxToken { byte_range: start..i, kind: TokenKind::Number });
+            continue;
+        }
+
+        // Identifier or keyword
+        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') { i += 1; }
+            let word = &text[start..i];
+            let kind = classify_sql_word(word);
+            tokens.push(SyntaxToken { byte_range: start..i, kind });
+            continue;
+        }
+
+        // Two-char operators
+        if i + 1 < bytes.len() {
+            let two = &bytes[i..i+2];
+            if matches!(two, b"!=" | b"<>" | b"<=" | b">=" | b"||" | b"->" | b"::" | b"@>") {
+                tokens.push(SyntaxToken { byte_range: i..i+2, kind: TokenKind::Operator });
+                i += 2;
+                continue;
+            }
+            if two == b"->>" {
+                tokens.push(SyntaxToken { byte_range: i..i+3, kind: TokenKind::Operator });
+                i += 3;
+                continue;
+            }
+        }
+
+        // Punctuation
+        if matches!(bytes[i], b'(' | b')' | b',' | b';' | b'[' | b']' | b'{' | b'}') {
+            tokens.push(SyntaxToken { byte_range: i..i+1, kind: TokenKind::Punctuation });
+            i += 1;
+            continue;
+        }
+
+        // Single-char operators
+        if matches!(bytes[i], b'=' | b'<' | b'>' | b'+' | b'-' | b'*' | b'/' | b'%' | b'~' | b'&' | b'|' | b'^') {
+            tokens.push(SyntaxToken { byte_range: i..i+1, kind: TokenKind::Operator });
+            i += 1;
+            continue;
+        }
+
+        // Skip anything else (e.g. dot used as punctuation)
+        if bytes[i] == b'.' {
+            tokens.push(SyntaxToken { byte_range: i..i+1, kind: TokenKind::Punctuation });
+        }
+        i += 1;
     }
 
-    match kind.to_uppercase().as_str() {
+    tokens
+}
+
+fn classify_sql_word(word: &str) -> TokenKind {
+    match word.to_uppercase().as_str() {
         "SELECT" | "FROM" | "WHERE" | "INSERT" | "UPDATE" | "DELETE" | "CREATE" | "DROP"
         | "ALTER" | "TABLE" | "INDEX" | "INTO" | "VALUES" | "SET" | "JOIN" | "LEFT" | "RIGHT"
         | "INNER" | "OUTER" | "CROSS" | "ON" | "AND" | "OR" | "NOT" | "IN" | "IS" | "NULL"
@@ -132,49 +239,15 @@ fn classify_sql(node: &Node) -> TokenKind {
         | "ANALYZE" | "VACUUM" | "TRUNCATE" | "RENAME" | "TO" | "ADD" | "COLUMN" | "TEMP"
         | "TEMPORARY" | "MATERIALIZED" | "LATERAL" | "NATURAL" | "FULL" | "ILIKE"
         | "SIMILAR" | "ANY" | "SOME" | "COALESCE" | "NULLIF" | "CAST" | "EXTRACT"
-        | "POSITION" | "SUBSTRING" | "TRIM" | "OVERLAY" | "PLACING" | "COLLATE" => {
-            return TokenKind::Keyword;
-        }
-        _ => {}
-    }
-    match kind.to_uppercase().as_str() {
+        | "POSITION" | "SUBSTRING" | "TRIM" | "OVERLAY" | "PLACING" | "COLLATE" => TokenKind::Keyword,
+
         "INT" | "INTEGER" | "BIGINT" | "SMALLINT" | "TINYINT" | "FLOAT" | "DOUBLE" | "REAL"
         | "DECIMAL" | "NUMERIC" | "BOOLEAN" | "BOOL" | "CHAR" | "VARCHAR" | "TEXT" | "BLOB"
         | "DATE" | "TIME" | "TIMESTAMP" | "DATETIME" | "INTERVAL" | "UUID" | "JSON"
         | "JSONB" | "SERIAL" | "BIGSERIAL" | "BYTEA" | "ARRAY" | "MONEY" | "INET"
-        | "TIMESTAMPTZ" | "TIMETZ" | "INT2" | "INT4" | "INT8" | "FLOAT4" | "FLOAT8" => {
-            return TokenKind::Type;
-        }
-        _ => {}
-    }
-    match kind {
-        "string" | "literal_string" | "single_quoted_string" | "double_quoted_string"
-        | "dollar_quoted_string" => TokenKind::String,
-        "number" | "literal_number" | "integer" | "float" | "numeric" => TokenKind::Number,
-        "comment" | "line_comment" | "block_comment" | "marginalia" => TokenKind::Comment,
-        "(" | ")" | "," | ";" | "." | "[" | "]" | "{" | "}" | "::" => TokenKind::Punctuation,
-        "=" | "!=" | "<>" | "<" | ">" | "<=" | ">=" | "+" | "-" | "*" | "/" | "%" | "||"
-        | "~" | "&" | "|" | "^" | "=>" | "->" | "->>" | "@>" | "<@" => TokenKind::Operator,
-        "identifier" | "object_reference" | "field" | "column" | "table" | "column_name"
-        | "table_name" | "schema_name" | "alias" => TokenKind::Identifier,
-        "invocation" | "function_call" | "function_name" => TokenKind::Function,
-        "type" | "type_name" | "data_type" | "column_type" => TokenKind::Type,
-        "ERROR" => TokenKind::Error,
-        _ => {
-            if let Some(p) = node.parent() {
-                match p.kind() {
-                    "invocation" | "function_call" | "function_name" => TokenKind::Function,
-                    "type" | "type_name" | "data_type" | "column_type" => TokenKind::Type,
-                    "string" | "literal_string" | "single_quoted_string"
-                    | "double_quoted_string" | "dollar_quoted_string" => TokenKind::String,
-                    "comment" | "line_comment" | "block_comment" => TokenKind::Comment,
-                    k if k.starts_with("keyword_") => TokenKind::Keyword,
-                    _ => TokenKind::Plain,
-                }
-            } else {
-                TokenKind::Plain
-            }
-        }
+        | "TIMESTAMPTZ" | "TIMETZ" | "INT2" | "INT4" | "INT8" | "FLOAT4" | "FLOAT8" => TokenKind::Type,
+
+        _ => TokenKind::Identifier,
     }
 }
 
@@ -248,7 +321,6 @@ fn classify_rust(node: &Node) -> TokenKind {
         "ERROR" => TokenKind::Error,
 
         _ => {
-            // Fallback: check parent
             if let Some(p) = node.parent() {
                 match p.kind() {
                     "string_literal" | "raw_string_literal" | "char_literal" => TokenKind::String,

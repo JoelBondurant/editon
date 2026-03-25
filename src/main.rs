@@ -1,16 +1,17 @@
 use iced::keyboard::{self, Key};
-use iced::widget::{column, container, horizontal_space, row, text};
+use iced::widget::{column, container, row, text, Space};
 use iced::{event, Element, Length, Subscription, Task, Theme};
 
-use sql_editor::buffer::{Buffer, CursorPos, Selection, UndoConfig};
-use sql_editor::highlight::SyntaxLanguage;
-use sql_editor::theme::EditorTheme;
-use sql_editor::widget::{self, EditorAction, SqlEditor};
+use editon::buffer::{Buffer, CursorPos, Selection, UndoConfig};
+use editon::highlight::SyntaxLanguage;
+use editon::theme::EditorTheme;
+use editon::widget::{self, EditorAction, SqlEditor};
 
 fn main() -> iced::Result {
-    iced::application("Code Editor", App::update, App::view)
+    iced::application(App::new, App::update, App::view)
+        .title("Code Editor")
         .subscription(App::subscription)
-        .theme(|_| Theme::Dark)
+        .theme(|_: &App| Theme::Dark)
         .window_size((1200.0, 800.0))
         .antialiasing(true)
         .run()
@@ -417,7 +418,7 @@ impl App {
         let status_bar = container(
             row![
                 text(&self.status).size(13).color(sc),
-                horizontal_space(),
+                Space::new().width(Length::Fill),
                 text(wrap_status).size(13).color(sc),
                 text("  ·  ").size(13).color(sep),
                 text("UTF-8").size(13).color(sc),

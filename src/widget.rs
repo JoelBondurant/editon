@@ -2,13 +2,12 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer;
 use iced::advanced::text::Renderer as TextRenderer;
 use iced::advanced::widget::{self, Widget};
-use iced::advanced::{Clipboard, Shell};
-use iced::event::Status;
-use iced::keyboard::{self, Key};
+use iced::advanced::{Clipboard, Renderer as _, Shell};
+use iced::keyboard;
 use iced::mouse;
 use iced::{Color, Element, Event, Length, Pixels, Point, Rectangle, Renderer, Size, Theme};
 
-use crate::buffer::{Buffer, CursorPos, Selection};
+use crate::buffer::{Buffer, CursorPos};
 use crate::highlight::TokenKind;
 use crate::theme::EditorTheme;
 
@@ -118,7 +117,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
     fn state(&self) -> widget::tree::State { widget::tree::State::new(EditorState::default()) }
     fn size(&self) -> Size<Length> { Size { width: Length::Fill, height: Length::Fill } }
 
-    fn layout(&self, _t: &mut widget::Tree, _r: &Renderer, lim: &layout::Limits) -> layout::Node {
+    fn layout(&mut self, _t: &mut widget::Tree, _r: &Renderer, lim: &layout::Limits) -> layout::Node {
         layout::Node::new(lim.width(Length::Fill).height(Length::Fill).max())
     }
 
@@ -133,12 +132,13 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
         let gw = self.gutter_w();
         let tx = self.text_x();
 
-        renderer.with_layer(b, |r| {
+        renderer.start_layer(b);
+        {
             // Background
-            fill(r, b, th.background);
+            fill(renderer, b, th.background);
             // Gutter
-            fill(r, Rectangle { x: b.x, y: b.y, width: gw, height: b.height }, th.gutter_bg);
-            fill(r, Rectangle { x: b.x + gw - 1.0, y: b.y, width: 1.0, height: b.height }, th.gutter_border);
+            fill(renderer,Rectangle { x: b.x, y: b.y, width: gw, height: b.height }, th.gutter_bg);
+            fill(renderer,Rectangle { x: b.x + gw - 1.0, y: b.y, width: 1.0, height: b.height }, th.gutter_border);
 
             // Visible lines
             let editor_h = b.height - if self.buffer.search.is_open { SEARCH_PANEL_H } else { 0.0 };
@@ -154,21 +154,21 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
 
                 // Current line
                 if li == active && st.is_focused {
-                    fill(r, Rectangle { x: b.x + gw, y, width: b.width - gw - SCROLL_W - if self.show_minimap { MINIMAP_W } else { 0.0 }, height: LINE_H }, th.current_line_bg);
+                    fill(renderer,Rectangle { x: b.x + gw, y, width: b.width - gw - SCROLL_W - if self.show_minimap { MINIMAP_W } else { 0.0 }, height: LINE_H }, th.current_line_bg);
                 }
 
                 // Indent guides
                 for &col in &self.buffer.indent_guides(li) {
                     let gx = b.x + tx + (col as f32 * CHAR_W) - CHAR_W * 4.0 - self.scroll_x;
                     let c = if li == active { th.indent_guide_active } else { th.indent_guide };
-                    fill(r, Rectangle { x: gx, y, width: INDENT_W, height: LINE_H }, c);
+                    fill(renderer,Rectangle { x: gx, y, width: INDENT_W, height: LINE_H }, c);
                 }
 
                 // Line number
                 let num = format!("{}", li + 1);
                 let nc = if li == active { th.gutter_active_text } else { th.gutter_text };
                 let nx = b.x + gw - FOLD_COL_W - GUTTER_PAD - (num.len() as f32 * CHAR_W);
-                draw_text(r, &num, nx, y, nc, gw);
+                draw_text(renderer,&num, nx, y, nc, gw);
 
                 // Fold indicator
                 if self.buffer.folds.is_foldable(li) {
@@ -176,17 +176,17 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     let fy = y + LINE_H / 2.0 - 5.0;
                     let collapsed = self.buffer.folds.is_collapsed_start(li);
                     let sym = if collapsed { "▶" } else { "▼" };
-                    draw_text(r, sym, fx, fy, th.fold_indicator, FOLD_COL_W);
+                    draw_text(renderer,sym, fx, fy, th.fold_indicator, FOLD_COL_W);
                 }
 
                 // Collapsed indicator background
                 if self.buffer.folds.is_collapsed_start(li) {
-                    fill(r, Rectangle { x: b.x + gw, y, width: b.width - gw, height: LINE_H }, th.fold_collapsed_bg);
+                    fill(renderer,Rectangle { x: b.x + gw, y, width: b.width - gw, height: LINE_H }, th.fold_collapsed_bg);
                 }
 
                 // Error gutter dot
                 if self.buffer.diagnostics.iter().any(|d| d.line == li) {
-                    fill_r(r, Rectangle { x: b.x + 4.0, y: y + LINE_H / 2.0 - 3.0, width: 6.0, height: 6.0 }, th.error_gutter_marker, 3.0);
+                    fill_r(renderer,Rectangle { x: b.x + 4.0, y: y + LINE_H / 2.0 - 3.0, width: 6.0, height: 6.0 }, th.error_gutter_marker, 3.0);
                 }
 
                 // Search match highlights
@@ -196,7 +196,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                             let mx = b.x + tx + (m.col_start as f32 * CHAR_W) - self.scroll_x;
                             let mw = ((m.col_end - m.col_start) as f32 * CHAR_W).max(CHAR_W);
                             let c = if i == self.buffer.search.current_match { th.search_current_bg } else { th.search_match_bg };
-                            fill(r, Rectangle { x: mx, y, width: mw, height: LINE_H }, c);
+                            fill(renderer,Rectangle { x: mx, y, width: mw, height: LINE_H }, c);
                         }
                     }
                 }
@@ -210,7 +210,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                         let ce = if li == se.line { se.col } else { ll + 1 };
                         let sx = b.x + tx + (cs as f32 * CHAR_W) - self.scroll_x;
                         let sw = ((ce - cs) as f32 * CHAR_W).max(CHAR_W * 0.5);
-                        fill(r, Rectangle { x: sx, y, width: sw, height: LINE_H }, th.selection);
+                        fill(renderer,Rectangle { x: sx, y, width: sw, height: LINE_H }, th.selection);
                     }
                 }
 
@@ -219,13 +219,13 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     for &(bl, bc) in &[(bm.open_line, bm.open_col), (bm.close_line, bm.close_col)] {
                         if bl == li {
                             let bx = b.x + tx + (bc as f32 * CHAR_W) - self.scroll_x;
-                            fill(r, Rectangle { x: bx, y, width: CHAR_W, height: LINE_H }, th.bracket_match_bg);
+                            fill(renderer,Rectangle { x: bx, y, width: CHAR_W, height: LINE_H }, th.bracket_match_bg);
                             for rect in [
                                 Rectangle { x: bx, y, width: CHAR_W, height: BRACKET_BW },
                                 Rectangle { x: bx, y: y + LINE_H - BRACKET_BW, width: CHAR_W, height: BRACKET_BW },
                                 Rectangle { x: bx, y, width: BRACKET_BW, height: LINE_H },
                                 Rectangle { x: bx + CHAR_W - BRACKET_BW, y, width: BRACKET_BW, height: LINE_H },
-                            ] { fill(r, rect, th.bracket_match_border); }
+                            ] { fill(renderer,rect, th.bracket_match_border); }
                         }
                     }
                 }
@@ -256,7 +256,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     let sl = &lt[start..end.min(lt.len())];
                     if sl.is_empty() { continue; }
                     let px = b.x + tx + (start as f32 * CHAR_W) - self.scroll_x;
-                    draw_text(r, sl, px, y, token_color(&kind, th), b.width);
+                    draw_text(renderer,sl, px, y, token_color(&kind, th), b.width);
                 }
 
                 // Collapsed line count badge
@@ -265,7 +265,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     if hc > 0 {
                         let badge = format!(" ⋯ {} lines", hc);
                         let bx = b.x + tx + (lt.len() as f32 * CHAR_W) + 8.0 - self.scroll_x;
-                        draw_text(r, &badge, bx, y, th.comment, 200.0);
+                        draw_text(renderer,&badge, bx, y, th.comment, 200.0);
                     }
                 }
 
@@ -275,11 +275,11 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                         let ux = b.x + tx + (diag.col_start as f32 * CHAR_W) - self.scroll_x;
                         let uw = ((diag.col_end - diag.col_start) as f32 * CHAR_W).max(CHAR_W);
                         let uy = y + LINE_H - ERR_THICK - 1.0;
-                        let seg = 4.0;
+                        let seg: f32 = 4.0;
                         let mut sx = ux;
                         let mut up = true;
                         while sx < ux + uw {
-                            fill(r, Rectangle { x: sx, y: if up { uy - 1.0 } else { uy + 1.0 }, width: seg.min(ux + uw - sx), height: ERR_THICK }, th.error_underline);
+                            fill(renderer,Rectangle { x: sx, y: if up { uy - 1.0 } else { uy + 1.0 }, width: seg.min(ux + uw - sx), height: ERR_THICK }, th.error_underline);
                             sx += seg;
                             up = !up;
                         }
@@ -294,7 +294,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                 let cy = b.y + TOP_PAD + (cl as f32 * LINE_H) - self.scroll_y;
                 let cx = b.x + tx + (cc as f32 * CHAR_W) - self.scroll_x;
                 if cy > b.y - LINE_H && cy < b.y + editor_h {
-                    fill(r, Rectangle { x: cx, y: cy, width: CURSOR_W, height: LINE_H }, th.cursor);
+                    fill(renderer,Rectangle { x: cx, y: cy, width: CURSOR_W, height: LINE_H }, th.cursor);
                 }
             }
 
@@ -302,7 +302,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
             if self.show_minimap {
                 let mx = self.minimap_x(&b);
                 let mh = editor_h;
-                fill(r, Rectangle { x: mx, y: b.y, width: MINIMAP_W, height: mh }, th.minimap_bg);
+                fill(renderer,Rectangle { x: mx, y: b.y, width: MINIMAP_W, height: mh }, th.minimap_bg);
 
                 // Viewport indicator
                 let total_h = self.buffer.line_count() as f32 * MINIMAP_LINE_H;
@@ -310,7 +310,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     let vp_ratio = self.scroll_y / (self.buffer.line_count() as f32 * LINE_H).max(1.0);
                     let vp_h = (mh / total_h * mh).min(mh).max(20.0);
                     let vp_y = b.y + vp_ratio * (mh - vp_h);
-                    fill(r, Rectangle { x: mx, y: vp_y, width: MINIMAP_W, height: vp_h }, th.minimap_viewport);
+                    fill(renderer,Rectangle { x: mx, y: vp_y, width: MINIMAP_W, height: vp_h }, th.minimap_viewport);
                 }
 
                 // Minimap text rendering (simplified color blocks)
@@ -334,7 +334,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                             let c = token_color(&tok.kind, th);
                             // Dim the color for minimap
                             let dim = Color::from_rgba(c.r, c.g, c.b, 0.35);
-                            fill(r, Rectangle { x: tkx, y: my, width: tw.min(MINIMAP_W - 8.0), height: MINIMAP_LINE_H }, dim);
+                            fill(renderer,Rectangle { x: tkx, y: my, width: tw.min(MINIMAP_W - 8.0), height: MINIMAP_LINE_H }, dim);
                         }
                     }
                 }
@@ -342,22 +342,22 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
 
             // ── Scrollbar ─────────────────────────────────────────────
             let sb_x = b.x + b.width - SCROLL_W;
-            fill(r, Rectangle { x: sb_x, y: b.y, width: SCROLL_W, height: editor_h }, th.scrollbar_track);
+            fill(renderer,Rectangle { x: sb_x, y: b.y, width: SCROLL_W, height: editor_h }, th.scrollbar_track);
             let total = self.buffer.line_count() as f32 * LINE_H + TOP_PAD * 2.0;
             if total > editor_h {
                 let ratio = editor_h / total;
                 let th_h = (ratio * editor_h).max(24.0);
                 let max_sc = total - editor_h;
                 let th_y = b.y + (self.scroll_y / max_sc) * (editor_h - th_h);
-                fill_r(r, Rectangle { x: sb_x + 2.0, y: th_y, width: SCROLL_W - 4.0, height: th_h }, th.scrollbar_thumb, 3.0);
+                fill_r(renderer,Rectangle { x: sb_x + 2.0, y: th_y, width: SCROLL_W - 4.0, height: th_h }, th.scrollbar_thumb, 3.0);
             }
 
             // ── Search panel ──────────────────────────────────────────
             if self.buffer.search.is_open {
                 let sp_y = b.y + b.height - SEARCH_PANEL_H;
-                fill(r, Rectangle { x: b.x, y: sp_y, width: b.width, height: SEARCH_PANEL_H }, th.search_panel_bg);
+                fill(renderer,Rectangle { x: b.x, y: sp_y, width: b.width, height: SEARCH_PANEL_H }, th.search_panel_bg);
                 // Separator line
-                fill(r, Rectangle { x: b.x, y: sp_y, width: b.width, height: 1.0 }, th.gutter_border);
+                fill(renderer,Rectangle { x: b.x, y: sp_y, width: b.width, height: 1.0 }, th.gutter_border);
 
                 let info = format!(
                     "Find: \"{}\"  {} of {}   Replace: \"{}\"   [Enter=next] [Shift+Enter=prev] [Ctrl+Shift+H=replace] [Ctrl+Shift+Enter=all]",
@@ -366,7 +366,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     self.buffer.search.match_count(),
                     self.buffer.search.replacement,
                 );
-                draw_text(r, &info, b.x + 12.0, sp_y + 4.0, th.tooltip_text, b.width - 24.0);
+                draw_text(renderer,&info, b.x + 12.0, sp_y + 4.0, th.tooltip_text, b.width - 24.0);
             }
 
             // ── Diagnostic tooltip ────────────────────────────────────
@@ -376,27 +376,28 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     let dx = b.x + tx + (diag.col_start as f32 * CHAR_W) - self.scroll_x;
                     let tw = (diag.message.len() as f32 * CHAR_W * 0.62).min(400.0).max(150.0);
                     let th2 = 28.0;
-                    fill_r(r, Rectangle { x: dx + 1.0, y: dy + 1.0, width: tw, height: th2 }, Color::from_rgba(0.0, 0.0, 0.0, 0.25), 4.0);
-                    fill_r(r, Rectangle { x: dx, y: dy, width: tw, height: th2 }, th.tooltip_bg, 4.0);
+                    fill_r(renderer,Rectangle { x: dx + 1.0, y: dy + 1.0, width: tw, height: th2 }, Color::from_rgba(0.0, 0.0, 0.0, 0.25), 4.0);
+                    fill_r(renderer,Rectangle { x: dx, y: dy, width: tw, height: th2 }, th.tooltip_bg, 4.0);
                     for rect in [
                         Rectangle { x: dx, y: dy, width: tw, height: 1.0 },
                         Rectangle { x: dx, y: dy + th2 - 1.0, width: tw, height: 1.0 },
                         Rectangle { x: dx, y: dy, width: 1.0, height: th2 },
                         Rectangle { x: dx + tw - 1.0, y: dy, width: 1.0, height: th2 },
-                    ] { fill(r, rect, th.tooltip_border); }
+                    ] { fill(renderer,rect, th.tooltip_border); }
                     let msg = if diag.message.len() > 55 { format!("{}…", &diag.message[..54]) } else { diag.message.clone() };
-                    draw_text(r, &msg, dx + 8.0, dy, th.tooltip_text, tw - 16.0);
+                    draw_text(renderer, &msg, dx + 8.0, dy, th.tooltip_text, tw - 16.0);
                 }
             }
-        });
+        }
+        renderer.end_layer();
     }
 
-    fn on_event(
-        &mut self, tree: &mut widget::Tree, event: Event,
+    fn update(
+        &mut self, tree: &mut widget::Tree, event: &Event,
         layout: Layout<'_>, cursor: mouse::Cursor,
         _r: &Renderer, _clip: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>, _vp: &Rectangle,
-    ) -> Status {
+    ) {
         let b = layout.bounds();
         let st = tree.state.downcast_mut::<EditorState>();
 
@@ -417,12 +418,14 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     if pos.x >= b.x + gw - FOLD_COL_W && pos.x <= b.x + gw {
                         // fold toggle handled by app
                         shell.publish((self.on_action)(EditorAction::CursorMoved));
-                        return Status::Captured;
+                        shell.capture_event();
+                        return;
                     }
 
                     st.is_dragging = true;
                     shell.publish((self.on_action)(EditorAction::CursorMoved));
-                    return Status::Captured;
+                    shell.capture_event();
+                    return;
                 } else {
                     st.is_focused = false;
                 }
@@ -441,14 +444,13 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                         }
                     }
                 }
-                if st.is_dragging { return Status::Captured; }
+                if st.is_dragging { shell.capture_event(); return; }
             }
             Event::Keyboard(keyboard::Event::KeyPressed { .. }) if st.is_focused => {
-                return Status::Captured;
+                shell.capture_event(); return;
             }
             _ => {}
         }
-        Status::Ignored
     }
 
     fn mouse_interaction(
@@ -475,11 +477,11 @@ impl<'a, Message: Clone + 'a> From<SqlEditor<'a, Message>> for Element<'a, Messa
 // ─── Drawing helpers ──────────────────────────────────────────────────────────
 
 fn fill(r: &mut Renderer, rect: Rectangle, color: Color) {
-    r.fill_quad(renderer::Quad { bounds: rect, border: iced::Border::default(), shadow: iced::Shadow::default() }, color);
+    r.fill_quad(renderer::Quad { bounds: rect, border: iced::Border::default(), shadow: iced::Shadow::default(), snap: false }, color);
 }
 
 fn fill_r(r: &mut Renderer, rect: Rectangle, color: Color, radius: f32) {
-    r.fill_quad(renderer::Quad { bounds: rect, border: iced::Border { radius: [radius; 4].into(), ..Default::default() }, shadow: iced::Shadow::default() }, color);
+    r.fill_quad(renderer::Quad { bounds: rect, border: iced::Border { radius: radius.into(), ..Default::default() }, shadow: iced::Shadow::default(), snap: false }, color);
 }
 
 fn draw_text(r: &mut Renderer, content: &str, x: f32, y: f32, color: Color, max_w: f32) {
@@ -490,8 +492,8 @@ fn draw_text(r: &mut Renderer, content: &str, x: f32, y: f32, color: Color, max_
             size: Pixels(FONT_SZ),
             line_height: iced::advanced::text::LineHeight::Absolute(Pixels(LINE_H)),
             font: iced::Font::MONOSPACE,
-            horizontal_alignment: iced::alignment::Horizontal::Left,
-            vertical_alignment: iced::alignment::Vertical::Center,
+            align_x: iced::advanced::text::Alignment::Left,
+            align_y: iced::alignment::Vertical::Center,
             shaping: iced::advanced::text::Shaping::Basic,
             wrapping: iced::advanced::text::Wrapping::None,
         },

@@ -307,10 +307,13 @@ impl Buffer {
         self.highlighter.parse(&text);
         self.collect_diagnostics();
         self.update_bracket_match();
+        let line_count = self.line_count();
+        let lines: Vec<String> = (0..line_count).map(|l| self.line_text(l)).collect();
+        let tree = self.highlighter.tree().cloned();
         self.folds.detect_regions(
-            self.highlighter.tree(),
-            self.line_count(),
-            &|l| self.line_text(l),
+            tree.as_ref(),
+            line_count,
+            &|l| lines[l].clone(),
         );
         self.recompute_visual_lines();
         if self.search.is_open {
@@ -921,12 +924,13 @@ impl Buffer {
 
     fn collect_diagnostics(&mut self) {
         self.diagnostics.clear();
-        if let Some(tree) = self.highlighter.tree() {
+        let tree = self.highlighter.tree().cloned();
+        if let Some(tree) = tree {
             self.walk_errors(tree.root_node());
         }
     }
 
-    fn walk_errors(&mut self, node: tree_sitter::Node) {
+    fn walk_errors<'t>(&mut self, node: tree_sitter::Node<'t>) {
         if node.is_error() || node.is_missing() {
             let s = node.start_position();
             let e = node.end_position();
@@ -945,7 +949,7 @@ impl Buffer {
             });
         }
         for i in 0..node.child_count() {
-            if let Some(c) = node.child(i) { self.walk_errors(c); }
+            if let Some(c) = node.child(i as u32) { self.walk_errors(c); }
         }
     }
 
