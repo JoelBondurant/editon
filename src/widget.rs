@@ -486,19 +486,22 @@ fn fill_r(r: &mut Renderer, rect: Rectangle, color: Color, radius: f32) {
 }
 
 fn draw_text(r: &mut Renderer, content: &str, x: f32, y: f32, color: Color, max_w: f32) {
+    // Offset by half the leading so glyphs are visually centered within LINE_H.
+    // align_y: Top means position.y is the top of the glyph box — no ambiguity.
+    let text_y = y + (LINE_H - FONT_SZ) / 2.0;
     r.fill_text(
         iced::advanced::text::Text {
             content: content.to_string().into(),
-            bounds: Size::new(max_w, LINE_H),
+            bounds: Size::new(max_w, FONT_SZ),
             size: Pixels(FONT_SZ),
-            line_height: iced::advanced::text::LineHeight::Absolute(Pixels(LINE_H)),
+            line_height: iced::advanced::text::LineHeight::Relative(1.0),
             font: iced::Font::MONOSPACE,
             align_x: iced::advanced::text::Alignment::Left,
-            align_y: iced::alignment::Vertical::Center,
+            align_y: iced::alignment::Vertical::Top,
             shaping: iced::advanced::text::Shaping::Basic,
             wrapping: iced::advanced::text::Wrapping::None,
         },
-        Point::new(x, y), color,
+        Point::new(x, text_y), color,
         Rectangle { x, y, width: max_w, height: LINE_H },
     );
 }
