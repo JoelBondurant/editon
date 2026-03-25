@@ -1,8 +1,6 @@
 use ropey::Rope;
-use std::ops::Range;
-
 use crate::folding::FoldState;
-use crate::highlight::{Highlighter, SyntaxLanguage, SyntaxToken, TokenKind};
+use crate::highlight::{Highlighter, SyntaxLanguage, SyntaxToken};
 use crate::search::SearchState;
 use crate::wrap::{self, VisualLine, WrapConfig};
 
@@ -478,7 +476,7 @@ impl Buffer {
             }
         }
         if let Some(close) = matching_close(ch) {
-            if (ch == '\'' || ch == '"') {
+            if ch == '\'' || ch == '"' {
                 if let Some(prev) = self.char_before(self.selection.head) {
                     if prev.is_alphanumeric() || prev == '_' {
                         self.insert_char(ch);

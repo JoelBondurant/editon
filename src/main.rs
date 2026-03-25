@@ -2,7 +2,7 @@ use iced::keyboard::{self, Key};
 use iced::widget::{column, container, row, text, Space};
 use iced::{event, Element, Length, Subscription, Task, Theme};
 
-use editon::buffer::{Buffer, CursorPos, Selection, UndoConfig};
+use editon::buffer::{Buffer, CursorPos, UndoConfig};
 use editon::highlight::SyntaxLanguage;
 use editon::theme::EditorTheme;
 use editon::widget::{self, EditorAction, SqlEditor};
@@ -181,10 +181,7 @@ struct App {
     bounds_h: f32,
     is_dragging: bool,
     click_count: u32,
-    last_click_ms: u64,
     show_minimap: bool,
-    search_input: String,
-    replace_input: String,
 }
 
 #[derive(Debug, Clone)]
@@ -194,7 +191,6 @@ enum Msg {
     Scroll(f32, f32),
     MouseMove(iced::Point),
     MouseUp,
-    Tick,
 }
 
 impl App {
@@ -213,10 +209,7 @@ impl App {
             bounds_h: 750.0,
             is_dragging: false,
             click_count: 0,
-            last_click_ms: 0,
             show_minimap: true,
-            search_input: String::new(),
-            replace_input: String::new(),
         }, Task::none())
     }
 
@@ -412,12 +405,11 @@ impl App {
                 self.scroll_x = (self.scroll_x + dx).max(0.0);
             }
 
-            Msg::Tick => {}
         }
         Task::none()
     }
 
-    fn view(&self) -> Element<Msg> {
+    fn view(&'_ self) -> Element<'_, Msg> {
         let editor = SqlEditor::new(&self.buffer, &self.theme, Msg::Action)
             .scroll_y(self.scroll_y)
             .scroll_x(self.scroll_x)

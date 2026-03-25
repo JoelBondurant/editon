@@ -77,11 +77,6 @@ impl<'a, Message> SqlEditor<'a, Message> {
     fn minimap_x(&self, bounds: &Rectangle) -> f32 {
         bounds.x + bounds.width - if self.show_minimap { MINIMAP_W + SCROLL_W } else { SCROLL_W }
     }
-    fn text_area_w(&self, bounds: &Rectangle) -> f32 {
-        bounds.width - self.gutter_w() - LEFT_PAD
-            - if self.show_minimap { MINIMAP_W + SCROLL_W } else { SCROLL_W }
-    }
-
     fn pixel_to_pos(&self, bounds: &Rectangle, px: f32, py: f32) -> CursorPos {
         let rx = px - bounds.x - self.text_x() + self.scroll_x;
         let ry = py - bounds.y - TOP_PAD + self.scroll_y;
