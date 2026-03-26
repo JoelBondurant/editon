@@ -842,6 +842,55 @@ impl Buffer {
         }
     }
 
+    /// Search for `word` without opening the panel (used by `*` / `#`).
+    /// Jumps to the nearest match at or after the cursor.
+    pub fn search_star(&mut self, word: &str, forward: bool) {
+        self.search.query = word.to_string();
+        self.search.find_all(&self.rope);
+        let ci = self.pos_to_char(self.selection.head);
+        if forward {
+            self.search.jump_to_nearest(ci + 1);
+        } else {
+            // Jump to the match just before current pos
+            if !self.search.matches.is_empty() {
+                let n = self.search.matches.len();
+                self.search.current_match = (0..n)
+                    .rev()
+                    .find(|&i| self.search.matches[i].char_start < ci)
+                    .unwrap_or(n - 1);
+            }
+        }
+        self.jump_to_current_match();
+    }
+
+    /// Replace the character under the cursor with `ch`, leaving the cursor on it.
+    pub fn replace_char(&mut self, ch: char) {
+        let pos = self.selection.head;
+        if pos.col >= self.line_len(pos.line) { return; }
+        self.save_undo(EditKind::Delete);
+        let ci = self.pos_to_char(pos);
+        self.rope.remove(ci..ci + 1);
+        self.rope.insert_char(ci, ch);
+        let new_pos = if ch == '\n' { CursorPos::new(pos.line + 1, 0) } else { pos };
+        self.selection = Selection::caret(new_pos);
+        self.post_edit();
+    }
+
+    /// Return the word (alphanumeric + `_`) under the cursor, or `None`.
+    pub fn word_under_cursor(&self) -> Option<String> {
+        let pos = self.selection.head;
+        let text = self.line_text(pos.line);
+        let chars: Vec<char> = text.chars().collect();
+        if pos.col >= chars.len() { return None; }
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        if !is_word(chars[pos.col]) { return None; }
+        let mut start = pos.col;
+        while start > 0 && is_word(chars[start - 1]) { start -= 1; }
+        let mut end = pos.col + 1;
+        while end < chars.len() && is_word(chars[end]) { end += 1; }
+        Some(chars[start..end].iter().collect())
+    }
+
     // ── Folding ───────────────────────────────────────────────────────────
 
     pub fn toggle_fold(&mut self, line: usize) {
