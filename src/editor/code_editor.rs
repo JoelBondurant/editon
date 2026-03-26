@@ -157,6 +157,13 @@ impl CodeEditor {
                 self.click_count = 1;
                 self.update_status();
             }
+            EditorMsg::Action(EditorAction::DoubleClick(pos)) => {
+                let cursor_pos = self.pos_from_pixel(pos);
+                self.buffer.select_word_at(cursor_pos);
+                self.is_dragging = true;
+                self.click_count = 2;
+                self.update_status();
+            }
             EditorMsg::Action(_) => {}
 
             EditorMsg::MouseMove(pos) => {
@@ -495,6 +502,12 @@ impl CodeEditor {
             pixel.x,
             pixel.y,
         )
+    }
+
+    pub(in crate::editor) fn take_count(&mut self) -> usize {
+        let n = self.vim_count.parse::<usize>().unwrap_or(1).max(1);
+        self.vim_count.clear();
+        n
     }
 
     pub(in crate::editor) fn update_status(&mut self) {

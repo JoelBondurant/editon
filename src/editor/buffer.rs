@@ -39,6 +39,17 @@ pub fn logical_col_of(line: &str, target_vcol: usize) -> usize {
     line.chars().count()
 }
 
+/// Iterate over the characters of a line together with each character's starting
+/// visual column. Tabs expand to the next `TAB_WIDTH` boundary.
+pub fn chars_with_vcols(line: &str) -> impl Iterator<Item = (char, usize)> + '_ {
+    let mut vcol = 0usize;
+    line.chars().map(move |ch| {
+        let start = vcol;
+        vcol = if ch == '\t' { (vcol / TAB_WIDTH + 1) * TAB_WIDTH } else { vcol + 1 };
+        (ch, start)
+    })
+}
+
 // ─── Diagnostic ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -615,7 +626,7 @@ impl Buffer {
                 self.rope.remove(ci..ci + 1);
                 1
             } else {
-                let spaces = text.chars().take_while(|c| *c == ' ').count().min(4);
+                let spaces = text.chars().take_while(|c| *c == ' ').count().min(TAB_WIDTH);
                 if spaces > 0 { self.rope.remove(ci..ci + spaces); }
                 spaces
             };

@@ -46,8 +46,7 @@ impl CodeEditor {
                 _ => None,
             };
             if let Some(c) = ch {
-                let count = self.vim_count.parse::<usize>().unwrap_or(1).max(1);
-                self.vim_count.clear();
+                let count = self.take_count();
                 for _ in 0..count {
                     self.buffer.replace_char(c);
                 }
@@ -118,8 +117,7 @@ impl CodeEditor {
                         return Task::none();
                     }
 
-                    let count = self.vim_count.parse::<usize>().unwrap_or(1).max(1);
-                    self.vim_count.clear();
+                    let count = self.take_count();
 
                     // Pending operator + motion/doubling
                     if let Some(op) = self.pending_op.take() {
@@ -460,8 +458,7 @@ impl CodeEditor {
                 return Task::none();
             }
         }
-        let count = self.vim_count.parse::<usize>().unwrap_or(1).max(1);
-        self.vim_count.clear();
+        let count = self.take_count();
 
         match key {
             Key::Named(Named::Escape) => {
@@ -648,8 +645,7 @@ impl CodeEditor {
                 return Task::none();
             }
         }
-        let count = self.vim_count.parse::<usize>().unwrap_or(1).max(1);
-        self.vim_count.clear();
+        let count = self.take_count();
 
         match key {
             Key::Named(Named::Escape) => {
