@@ -577,6 +577,20 @@ impl CodeEditor {
                                 self.buffer.select_lines(e.line - s.line + 1);
                             }
                         }
+                        "u" => {
+                            self.buffer.transform_case(false);
+                            self.vim_mode = VimMode::Normal;
+                            self.update_status();
+                            self.ensure_cursor_visible();
+                            return Task::none();
+                        }
+                        "U" => {
+                            self.buffer.transform_case(true);
+                            self.vim_mode = VimMode::Normal;
+                            self.update_status();
+                            self.ensure_cursor_visible();
+                            return Task::none();
+                        }
                         _ => {}
                     }
                 }

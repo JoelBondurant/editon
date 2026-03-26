@@ -403,6 +403,24 @@ impl Buffer {
         text
     }
 
+    pub fn transform_case(&mut self, uppercase: bool) {
+        if self.selection.is_caret() { return; }
+        let text = self.selected_text();
+        let transformed: String = if uppercase {
+            text.chars().flat_map(|c| c.to_uppercase()).collect()
+        } else {
+            text.chars().flat_map(|c| c.to_lowercase()).collect()
+        };
+        let (s, e) = self.selection.ordered();
+        self.save_undo_boundary();
+        let ci_start = self.pos_to_char(s);
+        let ci_end = self.pos_to_char(e);
+        self.rope.remove(ci_start..ci_end);
+        self.rope.insert(ci_start, &transformed);
+        self.selection = Selection::caret(s);
+        self.post_edit();
+    }
+
     pub fn cut(&mut self) -> String {
         let text = self.copy();
         if !text.is_empty() {
