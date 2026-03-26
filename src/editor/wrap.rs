@@ -94,28 +94,3 @@ pub fn compute_visual_lines(
 
     visual
 }
-
-/// Convert a document (line, col) to a visual line index.
-pub fn doc_to_visual(visual_lines: &[VisualLine], doc_line: usize, doc_col: usize) -> usize {
-    for (i, vl) in visual_lines.iter().enumerate() {
-        if vl.doc_line == doc_line && doc_col >= vl.col_start && doc_col <= vl.col_end {
-            return i;
-        }
-        // If past the target doc line, use the last visual line of that doc line
-        if vl.doc_line > doc_line {
-            return i.saturating_sub(1);
-        }
-    }
-    visual_lines.len().saturating_sub(1)
-}
-
-/// Convert a visual line index back to (doc_line, col_within_visual_line).
-pub fn visual_to_doc(visual_lines: &[VisualLine], visual_idx: usize) -> (usize, usize) {
-    if let Some(vl) = visual_lines.get(visual_idx) {
-        (vl.doc_line, vl.col_start)
-    } else if let Some(last) = visual_lines.last() {
-        (last.doc_line, last.col_start)
-    } else {
-        (0, 0)
-    }
-}

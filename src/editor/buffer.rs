@@ -1,9 +1,9 @@
 use regex::{Captures, RegexBuilder};
 use ropey::Rope;
-use crate::folding::FoldState;
-use crate::highlight::{Highlighter, SyntaxLanguage, SyntaxToken, TokenKind};
-use crate::search::SearchState;
-use crate::wrap::{self, VisualLine, WrapConfig};
+use super::folding::FoldState;
+use super::highlight::{Highlighter, SyntaxLanguage, SyntaxToken, TokenKind};
+use super::search::SearchState;
+use super::wrap::{self, VisualLine, WrapConfig};
 
 // ─── Tab-aware column helpers ─────────────────────────────────────────────────
 

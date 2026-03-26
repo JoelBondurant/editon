@@ -7,9 +7,9 @@ use iced::keyboard;
 use iced::mouse;
 use iced::{Color, Element, Event, Length, Pixels, Point, Rectangle, Renderer, Size, Theme};
 
-use crate::buffer::{self, Buffer, CursorPos, TAB_WIDTH};
-use crate::highlight::TokenKind;
-use crate::theme::EditorTheme;
+use super::buffer::{self, Buffer, CursorPos, TAB_WIDTH};
+use super::highlight::TokenKind;
+use super::theme::EditorTheme;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
