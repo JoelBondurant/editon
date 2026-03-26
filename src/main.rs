@@ -187,7 +187,7 @@ struct App {
 #[derive(Debug, Clone)]
 enum Msg {
     Action(EditorAction),
-    Key(Key, keyboard::Modifiers),
+    Key(Key, keyboard::Modifiers, Option<String>),
     Scroll(f32, f32),
     MouseMove(iced::Point),
     MouseUp,
@@ -215,8 +215,8 @@ impl App {
 
     fn subscription(&self) -> Subscription<Msg> {
         event::listen_with(|event, _status, _id| match event {
-            iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                Some(Msg::Key(key, modifiers))
+            iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, text, .. }) => {
+                Some(Msg::Key(key, modifiers, text.map(|t| t.to_string())))
             }
             iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) => {
                 let (dx, dy) = match delta {
@@ -256,7 +256,7 @@ impl App {
             }
             Msg::MouseUp => { self.is_dragging = false; }
 
-            Msg::Key(key, mods) => {
+            Msg::Key(key, mods, text) => {
                 let shift = mods.shift();
                 let ctrl = mods.command();
 
@@ -373,9 +373,9 @@ impl App {
                                 "y" => self.buffer.redo(),
                                 "d" => self.buffer.duplicate_line(),
                                 "c" => {
-                                    let text = self.buffer.copy();
-                                    if !text.is_empty() {
-                                        return iced::clipboard::write(text);
+                                    let copied = self.buffer.copy();
+                                    if !copied.is_empty() {
+                                        return iced::clipboard::write(copied);
                                     }
                                 }
                                 "x" => { let _ = self.buffer.cut(); }
@@ -386,7 +386,10 @@ impl App {
                                 _ => {}
                             }
                         } else {
-                            for c in s.chars() {
+                            // Use the event's `text` field so shift, AltGr, etc. are
+                            // applied correctly by the platform before we see them.
+                            let insert = text.as_deref().unwrap_or(s);
+                            for c in insert.chars() {
                                 self.buffer.insert_char_auto_pair(c);
                             }
                         }
