@@ -403,6 +403,45 @@ impl Buffer {
         text
     }
 
+    /// Delete a rectangular block from `top..=bottom` lines, columns `left_col..right_col_excl`.
+    pub fn block_delete(&mut self, top: usize, bottom: usize, left_col: usize, right_col_excl: usize) {
+        if left_col >= right_col_excl { return; }
+        self.save_undo_boundary();
+        let bottom = bottom.min(self.line_count().saturating_sub(1));
+        for li in (top..=bottom).rev() {
+            let line_len = self.line_len(li);
+            if left_col >= line_len { continue; }
+            let ci_start = self.rope.line_to_char(li) + left_col;
+            let ci_end = self.rope.line_to_char(li) + right_col_excl.min(line_len);
+            if ci_start < ci_end {
+                self.rope.remove(ci_start..ci_end);
+            }
+        }
+        self.selection = Selection::caret(CursorPos::new(top, left_col));
+        self.post_edit();
+    }
+
+    /// Insert `text` at `col` on every line from `top+1..=bottom`, replicating a block insert.
+    /// The top line already has the text from normal insert-mode editing.
+    pub fn block_insert_text(&mut self, top: usize, bottom: usize, col: usize, text: &str) {
+        if text.is_empty() { return; }
+        let bottom = bottom.min(self.line_count().saturating_sub(1));
+        if bottom <= top { return; }
+        for li in (top + 1..=bottom).rev() {
+            let line_len = self.line_len(li);
+            if col <= line_len {
+                let ci = self.rope.line_to_char(li) + col;
+                self.rope.insert(ci, text);
+            } else {
+                // Pad with spaces to reach col, then insert
+                let pad: String = " ".repeat(col - line_len);
+                let ci = self.rope.line_to_char(li) + line_len;
+                self.rope.insert(ci, &format!("{}{}", pad, text));
+            }
+        }
+        self.post_edit();
+    }
+
     pub fn transform_case(&mut self, uppercase: bool) {
         if self.selection.is_caret() { return; }
         let text = self.selected_text();

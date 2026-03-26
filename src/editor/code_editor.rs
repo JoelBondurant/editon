@@ -3,7 +3,7 @@ use iced::widget::{column, container, row, text, Space};
 use iced::{event, Element, Length, Subscription, Task, Theme};
 
 use super::{buffer, widget};
-use super::buffer::{Buffer, CursorPos, UndoConfig};
+use super::buffer::{Buffer, CursorPos, Selection, UndoConfig};
 use super::highlight::SyntaxLanguage;
 use super::theme::EditorTheme;
 use super::widget::{EditorAction, SqlEditor};
@@ -40,6 +40,8 @@ pub struct CodeEditor {
     pub(in crate::editor) pending_g: bool,
     pub(in crate::editor) vim_count: String,
     pub(in crate::editor) pending_op: Option<char>,
+    /// Pending block insert: (insert_col, top_line, bottom_line)
+    pub(in crate::editor) block_insert: Option<(usize, usize, usize)>,
 
     is_dragging: bool,
     click_count: u32,
@@ -69,6 +71,7 @@ impl CodeEditor {
             pending_g: false,
             vim_count: String::new(),
             pending_op: None,
+            block_insert: None,
         };
         ed.status = format!("NOR | Ln 1, Col 1 | {} diag", dc);
         ed
@@ -177,14 +180,38 @@ impl CodeEditor {
                 if self.vim_mode == VimMode::Visual || self.vim_mode == VimMode::VisualLine {
                     return self.handle_vim_visual_key(key, mods, text);
                 }
+                if self.vim_mode == VimMode::VisualBlock {
+                    return self.handle_vim_visual_block_key(key, mods, text);
+                }
 
                 // Insert mode: Escape → Normal
                 if matches!(&key, Key::Named(keyboard::key::Named::Escape))
                     && !self.buffer.search.is_open
                 {
+                    let col_before = self.buffer.selection.head.col;
+                    let line_before = self.buffer.selection.head.line;
                     self.vim_mode = VimMode::Normal;
-                    if self.buffer.selection.head.col > 0 {
+                    if col_before > 0 {
                         self.buffer.move_left(false);
+                    }
+                    if let Some((insert_col, top_line, bottom_line)) = self.block_insert.take() {
+                        if col_before > insert_col && line_before == top_line {
+                            let inserted: String = self.buffer.line_text(top_line)
+                                .chars()
+                                .skip(insert_col)
+                                .take(col_before - insert_col)
+                                .collect();
+                            if !inserted.is_empty() {
+                                self.buffer.block_insert_text(
+                                    top_line,
+                                    bottom_line,
+                                    insert_col,
+                                    &inserted,
+                                );
+                            }
+                        }
+                        self.buffer.selection =
+                            Selection::caret(CursorPos::new(top_line, insert_col));
                     }
                     self.update_status();
                     return Task::none();
@@ -352,12 +379,25 @@ impl CodeEditor {
     }
 
     pub fn view(&self) -> Element<'_, EditorMsg> {
+        let visual_block = if self.vim_mode == VimMode::VisualBlock
+            && !self.buffer.selection.is_caret()
+        {
+            let (s, e) = self.buffer.selection.ordered();
+            let left_col = self.buffer.selection.anchor.col
+                .min(self.buffer.selection.head.col);
+            let right_col = self.buffer.selection.anchor.col
+                .max(self.buffer.selection.head.col);
+            Some((s.line, e.line, left_col, right_col))
+        } else {
+            None
+        };
         let editor = SqlEditor::new(&self.buffer, &self.theme, EditorMsg::Action)
             .scroll_y(self.scroll_y)
             .scroll_x(self.scroll_x)
             .show_minimap(self.show_minimap)
             .show_whitespace(self.show_whitespace)
-            .block_cursor(self.vim_mode == VimMode::Normal);
+            .block_cursor(self.vim_mode == VimMode::Normal)
+            .visual_block(visual_block);
 
         let sc = iced::Color::from_rgb(0.55, 0.58, 0.62);
         let sep = iced::Color::from_rgb(0.35, 0.37, 0.40);
@@ -463,6 +503,7 @@ impl CodeEditor {
             VimMode::Insert => "INS",
             VimMode::Visual => "VIS",
             VimMode::VisualLine => "V-LINE",
+            VimMode::VisualBlock => "V-BLOCK",
             VimMode::Command => "CMD",
         };
         let p = self.buffer.selection.head;

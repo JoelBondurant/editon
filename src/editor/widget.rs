@@ -57,6 +57,8 @@ pub struct SqlEditor<'a, Message> {
     show_minimap: bool,
     block_cursor: bool,
     show_whitespace: bool,
+    /// Visual block selection: (top_line, bottom_line, left_col, right_col inclusive)
+    visual_block: Option<(usize, usize, usize, usize)>,
 }
 
 impl<'a, Message> SqlEditor<'a, Message> {
@@ -72,6 +74,7 @@ impl<'a, Message> SqlEditor<'a, Message> {
             show_minimap: true,
             block_cursor: false,
             show_whitespace: true,
+            visual_block: None,
         }
     }
 
@@ -80,6 +83,7 @@ impl<'a, Message> SqlEditor<'a, Message> {
     pub fn show_minimap(mut self, v: bool) -> Self { self.show_minimap = v; self }
     pub fn block_cursor(mut self, v: bool) -> Self { self.block_cursor = v; self }
     pub fn show_whitespace(mut self, v: bool) -> Self { self.show_whitespace = v; self }
+    pub fn visual_block(mut self, v: Option<(usize, usize, usize, usize)>) -> Self { self.visual_block = v; self }
 
     fn gutter_w(&self) -> f32 {
         let d = format!("{}", self.buffer.line_count()).len().max(3) as f32;
@@ -218,7 +222,16 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                 }
 
                 // Selection
-                if !self.buffer.selection.is_caret() {
+                if let Some((top, bottom, left_col, right_col)) = self.visual_block {
+                    if li >= top && li <= bottom {
+                        let lt_sel = self.buffer.line_text(li);
+                        let vcs = buffer::visual_col_of(&lt_sel, left_col);
+                        let vce = buffer::visual_col_of(&lt_sel, right_col + 1);
+                        let sx = b.x + tx + (vcs as f32 * CHAR_W) - self.scroll_x;
+                        let sw = ((vce - vcs) as f32 * CHAR_W).max(CHAR_W * 0.5);
+                        fill(renderer, Rectangle { x: sx, y, width: sw, height: LINE_H }, th.selection);
+                    }
+                } else if !self.buffer.selection.is_caret() {
                     let (ss, se) = self.buffer.selection.ordered();
                     if li >= ss.line && li <= se.line {
                         let lt_sel = self.buffer.line_text(li);

@@ -13,6 +13,7 @@ pub enum VimMode {
     Insert,
     Visual,
     VisualLine,
+    VisualBlock,
     Command,
 }
 
@@ -86,8 +87,9 @@ impl CodeEditor {
                 self.buffer.page_down(v, false);
             }
 
-            Key::Character(_) => {
-                let ch = text.as_deref().unwrap_or("");
+            Key::Character(ref kc) => {
+                let key_ch = kc.as_str();
+                let ch = if ctrl { key_ch } else { text.as_deref().unwrap_or(key_ch) };
 
                 if ctrl {
                     match ch {
@@ -99,6 +101,10 @@ impl CodeEditor {
                         "m" | "M" => self.show_minimap = !self.show_minimap,
                         "l" | "L" => self.show_whitespace = !self.show_whitespace,
                         "r" | "R" => self.buffer.redo(),
+                        "v" | "V" => {
+                            self.vim_mode = VimMode::VisualBlock;
+                            self.buffer.selection.anchor = self.buffer.selection.head;
+                        }
                         _ => {}
                     }
                 } else {
@@ -466,11 +472,15 @@ impl CodeEditor {
             Key::Named(Named::ArrowRight) => self.buffer.move_right(true),
             Key::Named(Named::ArrowUp) => self.buffer.move_up(true),
             Key::Named(Named::ArrowDown) => self.buffer.move_down(true),
-            Key::Character(_) => {
-                let ch = text.as_deref().unwrap_or("");
+            Key::Character(ref kc) => {
+                let key_ch = kc.as_str();
+                let ch = if ctrl { key_ch } else { text.as_deref().unwrap_or(key_ch) };
                 if ctrl {
                     match ch {
                         "f" | "F" => self.buffer.search_open(),
+                        "v" | "V" => {
+                            self.vim_mode = VimMode::VisualBlock;
+                        }
                         _ => {}
                     }
                 } else {
@@ -610,6 +620,119 @@ impl CodeEditor {
                 self.buffer.selection.anchor =
                     CursorPos::new(e.line, self.buffer.line_len(e.line));
             }
+        }
+
+        self.update_status();
+        self.ensure_cursor_visible();
+        Task::none()
+    }
+
+    // ─── Visual block mode ────────────────────────────────────────────────────
+
+    pub(in crate::editor) fn handle_vim_visual_block_key(
+        &mut self,
+        key: Key,
+        mods: keyboard::Modifiers,
+        text: Option<String>,
+    ) -> Task<EditorMsg> {
+        use keyboard::key::Named;
+        let ctrl = mods.command();
+
+        if let Key::Character(_) = &key {
+            let ch = text.as_deref().unwrap_or("");
+            let is_count_digit = ch.len() == 1
+                && ch.chars().next().map_or(false, |c| c.is_ascii_digit())
+                && (ch != "0" || !self.vim_count.is_empty());
+            if is_count_digit {
+                self.vim_count.push_str(ch);
+                return Task::none();
+            }
+        }
+        let count = self.vim_count.parse::<usize>().unwrap_or(1).max(1);
+        self.vim_count.clear();
+
+        match key {
+            Key::Named(Named::Escape) => {
+                self.buffer.selection.anchor = self.buffer.selection.head;
+                self.vim_mode = VimMode::Normal;
+            }
+            Key::Named(Named::ArrowLeft) => self.buffer.move_left(true),
+            Key::Named(Named::ArrowRight) => self.buffer.move_right(true),
+            Key::Named(Named::ArrowUp) => self.buffer.move_up(true),
+            Key::Named(Named::ArrowDown) => self.buffer.move_down(true),
+            Key::Character(ref kc) => {
+                let key_ch = kc.as_str();
+                let ch = if ctrl { key_ch } else { text.as_deref().unwrap_or(key_ch) };
+                if ctrl {
+                    match ch {
+                        "v" | "V" => {
+                            // Ctrl+V again collapses back to Normal
+                            self.buffer.selection.anchor = self.buffer.selection.head;
+                            self.vim_mode = VimMode::Normal;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    match ch {
+                        "h" => { for _ in 0..count { self.buffer.move_left(true); } }
+                        "j" => { for _ in 0..count { self.buffer.move_down(true); } }
+                        "k" => { for _ in 0..count { self.buffer.move_up(true); } }
+                        "l" => { for _ in 0..count { self.buffer.move_right(true); } }
+                        "w" => { for _ in 0..count { self.buffer.move_word_right(true); } }
+                        "b" => { for _ in 0..count { self.buffer.move_word_left(true); } }
+                        "0" | "^" => self.buffer.move_home(true),
+                        "$" => self.buffer.move_end(true),
+                        "G" => self.buffer.move_to_end(true),
+                        "g" => self.buffer.move_to_start(true),
+                        "v" => self.vim_mode = VimMode::Visual,
+                        "V" => {
+                            self.vim_mode = VimMode::VisualLine;
+                            let (s, e) = self.buffer.selection.ordered();
+                            self.buffer.select_lines(e.line - s.line + 1);
+                        }
+                        "I" => {
+                            let (s, e) = self.buffer.selection.ordered();
+                            let left_col = self.buffer.selection.anchor.col
+                                .min(self.buffer.selection.head.col);
+                            self.block_insert = Some((left_col, s.line, e.line));
+                            self.buffer.selection =
+                                Selection::caret(CursorPos::new(s.line, left_col));
+                            self.vim_mode = VimMode::Insert;
+                            self.update_status();
+                            self.ensure_cursor_visible();
+                            return Task::none();
+                        }
+                        "d" | "x" => {
+                            let (s, e) = self.buffer.selection.ordered();
+                            let left_col = self.buffer.selection.anchor.col
+                                .min(self.buffer.selection.head.col);
+                            let right_col = self.buffer.selection.anchor.col
+                                .max(self.buffer.selection.head.col) + 1;
+                            self.buffer.block_delete(s.line, e.line, left_col, right_col);
+                            self.vim_mode = VimMode::Normal;
+                            self.update_status();
+                            self.ensure_cursor_visible();
+                            return Task::none();
+                        }
+                        "u" => {
+                            self.buffer.transform_case(false);
+                            self.vim_mode = VimMode::Normal;
+                            self.update_status();
+                            self.ensure_cursor_visible();
+                            return Task::none();
+                        }
+                        "U" => {
+                            self.buffer.transform_case(true);
+                            self.vim_mode = VimMode::Normal;
+                            self.update_status();
+                            self.ensure_cursor_visible();
+                            return Task::none();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
         }
 
         self.update_status();
