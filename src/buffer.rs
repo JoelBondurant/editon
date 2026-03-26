@@ -1,3 +1,4 @@
+use regex::{Captures, RegexBuilder};
 use ropey::Rope;
 use crate::folding::FoldState;
 use crate::highlight::{Highlighter, SyntaxLanguage, SyntaxToken, TokenKind};
@@ -1234,6 +1235,84 @@ impl Buffer {
         while c <= vcol { g.push(c); c += TAB_WIDTH; }
         g
     }
+
+    // ── Vim :substitute ───────────────────────────────────────────────────
+
+    /// Apply a vim-style substitution to lines `first..=last`.
+    /// `pattern` is a Rust regex. `replacement` supports vim escapes:
+    /// `&` = whole match, `\1`–`\9` = capture groups, `\t` = tab, `\n` = newline, `\\` = backslash.
+    /// Returns the number of lines changed.
+    pub fn substitute(
+        &mut self,
+        first: usize,
+        last: usize,
+        pattern: &str,
+        replacement: &str,
+        global: bool,
+        case_insensitive: bool,
+    ) -> usize {
+        let re = match RegexBuilder::new(pattern)
+            .case_insensitive(case_insensitive)
+            .build()
+        {
+            Ok(r) => r,
+            Err(_) => return 0,
+        };
+
+        let rep = replacement.to_string();
+        let last = last.min(self.line_count().saturating_sub(1));
+
+        self.save_undo(EditKind::Other);
+
+        let mut changed = 0usize;
+        // Process bottom-to-top so rope char indices above stay valid.
+        for line in (first..=last).rev() {
+            let text = self.line_text(line);
+            let new_text = if global {
+                re.replace_all(&text, |caps: &Captures| apply_vim_replacement(&rep, caps))
+                    .into_owned()
+            } else {
+                re.replace(&text, |caps: &Captures| apply_vim_replacement(&rep, caps))
+                    .into_owned()
+            };
+            if new_text == text { continue; }
+
+            // Splice just the content portion of the line (leave the newline).
+            let line_start = self.rope.line_to_char(line);
+            let content_end = line_start + self.line_text(line).chars().count();
+            self.rope.remove(line_start..content_end);
+            self.rope.insert(line_start, &new_text);
+            changed += 1;
+        }
+
+        if changed > 0 { self.post_edit(); }
+        changed
+    }
+}
+
+// ── Vim replacement helper ─────────────────────────────────────────────────────
+
+fn apply_vim_replacement(rep: &str, caps: &Captures) -> String {
+    let mut out = String::new();
+    let mut chars = rep.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => match chars.next() {
+                Some('t')  => out.push('\t'),
+                Some('n')  => out.push('\n'),
+                Some('\\') => out.push('\\'),
+                Some(d) if d.is_ascii_digit() => {
+                    let idx = d.to_digit(10).unwrap() as usize;
+                    out.push_str(caps.get(idx).map_or("", |m| m.as_str()));
+                }
+                Some(c) => { out.push('\\'); out.push(c); }
+                None      => out.push('\\'),
+            },
+            '&' => out.push_str(caps.get(0).map_or("", |m| m.as_str())),
+            c   => out.push(c),
+        }
+    }
+    out
 }
 
 // ── SQL keyword typo detection ─────────────────────────────────────────────────

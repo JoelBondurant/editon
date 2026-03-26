@@ -687,6 +687,7 @@ name = "editon"
 version = "0.2.0"
 dependencies = [
  "iced",
+ "regex",
  "ropey",
  "tree-sitter",
  "tree-sitter-rust",

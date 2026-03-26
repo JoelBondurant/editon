@@ -935,6 +935,7 @@ impl App {
                     self.vim_mode = VimMode::Normal;
                 }
             }
+            Key::Named(Named::Space) => { self.vim_command.push(' '); }
             Key::Character(_) => {
                 if let Some(t) = text { self.vim_command.push_str(&t); }
             }
@@ -948,7 +949,8 @@ impl App {
 
     fn execute_vim_command(&mut self) {
         let cmd = self.vim_command.trim().to_string();
-        // :N  →  jump to line N (1-indexed, matches display)
+
+        // :N  →  jump to line N (1-indexed)
         if let Ok(n) = cmd.parse::<usize>() {
             let line = n.saturating_sub(1).min(self.buffer.line_count().saturating_sub(1));
             self.buffer.selection.anchor = CursorPos { line, col: 0 };
@@ -956,12 +958,95 @@ impl App {
             self.ensure_cursor_visible();
             return;
         }
+
+        // :[range]s/pattern/replacement/[flags]
+        if let Some((first, last, pat, rep, global, icase)) =
+            parse_substitute(&cmd, self.buffer.selection.head.line, self.buffer.line_count().saturating_sub(1))
+        {
+            let changed = self.buffer.substitute(first, last, &pat, &rep, global, icase);
+            // Move cursor to first changed line
+            if changed > 0 {
+                let line = first.min(self.buffer.line_count().saturating_sub(1));
+                self.buffer.selection.anchor = CursorPos { line, col: 0 };
+                self.buffer.selection.head   = CursorPos { line, col: 0 };
+                self.ensure_cursor_visible();
+            }
+            self.update_status();
+            return;
+        }
+
         match cmd.as_str() {
             "noh" | "nohl" | "nohlsearch" => self.buffer.search_close(),
-            "q" | "q!" | "wq"             => { /* TODO: quit when file I/O lands */ }
-            "w"                            => { /* TODO: save when file I/O lands */ }
-            _                              => {} // unknown — silently ignore
+            "q" | "q!" | "wq"             => { /* quit: no file I/O in demo */ }
+            "w"                            => { /* save:  no file I/O in demo */ }
+            _                              => {}
         }
+    }
+}
+
+// ── Vim :substitute command parser ────────────────────────────────────────────
+
+/// Parse `[range]s<sep>pattern<sep>replacement[<sep>[flags]]`.
+/// Returns `(first_line, last_line, pattern, replacement, global, case_insensitive)`.
+fn parse_substitute(
+    cmd: &str,
+    current_line: usize,
+    last_line: usize,
+) -> Option<(usize, usize, String, String, bool, bool)> {
+    // Consume optional range characters: digits, %, ., $, ,
+    let mut i = 0;
+    let bytes = cmd.as_bytes();
+    while i < bytes.len() && matches!(bytes[i], b'0'..=b'9' | b'%' | b'.' | b'$' | b',') {
+        i += 1;
+    }
+    let range_str = &cmd[..i];
+
+    // Next must be 's'
+    if bytes.get(i) != Some(&b's') { return None; }
+    i += 1;
+
+    // Separator character (usually '/')
+    let sep = *bytes.get(i)? as char;
+    i += 1;
+
+    // Split the remainder into at most 3 parts by sep
+    let rest = &cmd[i..];
+    let sep_str = sep.to_string();
+    let mut parts = rest.splitn(3, sep_str.as_str());
+    let pattern     = parts.next().unwrap_or("");
+    let replacement = parts.next().unwrap_or("");
+    let flags       = parts.next().unwrap_or("");
+
+    if pattern.is_empty() { return None; }
+
+    let (first, last) = parse_vim_range(range_str, current_line, last_line);
+    let global = flags.contains('g');
+    let icase  = flags.contains('i');
+
+    Some((first, last, pattern.to_string(), replacement.to_string(), global, icase))
+}
+
+fn parse_vim_range(range: &str, current: usize, last: usize) -> (usize, usize) {
+    match range.trim() {
+        "" | "." => (current, current),
+        "%"      => (0, last),
+        "$"      => (last, last),
+        s => {
+            if let Some((a, b)) = s.split_once(',') {
+                (parse_line_addr(a, current, last), parse_line_addr(b, current, last))
+            } else {
+                let n = parse_line_addr(s, current, last);
+                (n, n)
+            }
+        }
+    }
+}
+
+fn parse_line_addr(s: &str, current: usize, last: usize) -> usize {
+    match s.trim() {
+        "." => current,
+        "$" => last,
+        n   => n.parse::<usize>().map(|n| n.saturating_sub(1).min(last)).unwrap_or(current),
     }
 }
 
