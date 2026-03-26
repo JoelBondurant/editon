@@ -426,8 +426,9 @@ impl Buffer {
 		let line_count = self.line_count();
 		let lines: Vec<String> = (0..line_count).map(|l| self.line_text(l)).collect();
 		let tree = self.highlighter.tree().cloned();
+		let lang = self.language();
 		self.folds
-			.detect_regions(tree.as_ref(), line_count, &|l| lines[l].clone());
+			.detect_regions(tree.as_ref(), lang, line_count, &|l| lines[l].clone());
 		self.recompute_visual_lines();
 		if self.search.is_open {
 			self.search.find_all(&self.rope);

@@ -243,6 +243,15 @@ impl CodeEditor {
 				self.set_viewport(w, h);
 				return Task::none();
 			}
+			EditorMsg::Action(EditorAction::ToggleFold(line)) => {
+				self.buffer.toggle_fold(line);
+				if self.buffer.wrap_config.enabled {
+					self.update_wrap_col();
+				}
+				self.update_status();
+				self.ensure_cursor_visible();
+				return Task::none();
+			}
 			EditorMsg::Action(EditorAction::MouseDown(pos)) => {
 				let cursor_pos = self.pos_from_pixel(pos);
 				self.buffer.selection.anchor = cursor_pos;

@@ -48,6 +48,8 @@ pub enum EditorAction {
 	DoubleClick(iced::Point),
 	/// Fired when the widget's pixel bounds change (e.g. window resize).
 	Resize(f32, f32),
+	/// Toggle the fold at the given document line.
+	ToggleFold(usize),
 }
 
 // ─── Widget ───────────────────────────────────────────────────────────────────
@@ -1095,7 +1097,15 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
 
 					let gw = self.gutter_w();
 					if pos.x >= b.x + gw - FOLD_COL_W && pos.x <= b.x + gw {
-						shell.publish((self.on_action)(EditorAction::CursorMoved));
+						let ry = pos.y - b.y - TOP_PAD + self.scroll_y;
+						let vl_idx = ((ry / LINE_H).floor().max(0.0) as usize)
+							.min(self.buffer.visual_lines.len().saturating_sub(1));
+						if let Some(vl) = self.buffer.visual_lines.get(vl_idx) {
+							let doc_line = vl.doc_line;
+							if self.buffer.folds.is_foldable(doc_line) {
+								shell.publish((self.on_action)(EditorAction::ToggleFold(doc_line)));
+							}
+						}
 						shell.capture_event();
 						return;
 					}
