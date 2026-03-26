@@ -81,8 +81,8 @@ impl CodeEditor {
             scroll_y: 0.0,
             scroll_x: 0.0,
             status: String::new(),
-            viewport_w: 1200.0,
-            viewport_h: 750.0,
+            viewport_w: 0.0,
+            viewport_h: 0.0,
             is_dragging: false,
             click_count: 0,
             show_minimap: true,
@@ -162,6 +162,31 @@ impl CodeEditor {
     pub fn set_viewport(&mut self, w: f32, h: f32) {
         self.viewport_w = w;
         self.viewport_h = h;
+        if self.buffer.wrap_config.enabled {
+            self.update_wrap_col();
+        }
+    }
+
+    /// Enable or disable word wrap, computing the column from the current viewport.
+    pub fn set_wrap_enabled(&mut self, enabled: bool) {
+        self.buffer.set_wrap(enabled);
+        if enabled {
+            self.update_wrap_col();
+        }
+        if !enabled {
+            // Horizontal scroll is meaningful again when wrap is off.
+        }
+    }
+
+    /// Recompute the wrap column from the current viewport width and apply it.
+    fn update_wrap_col(&mut self) {
+        if self.viewport_w < 1.0 { return; }
+        let gw = widget::gutter_width(self.buffer.line_count());
+        let mm = if self.show_minimap { widget::minimap_width() } else { 0.0 };
+        let usable = self.viewport_w - gw - widget::scrollbar_width() - mm - widget::left_pad();
+        let col = ((usable / widget::CHAR_W) as usize).max(20);
+        self.buffer.set_wrap_col(col);
+        self.scroll_x = 0.0;
     }
 
     // ─── iced integration ─────────────────────────────────────────────────────
@@ -190,6 +215,10 @@ impl CodeEditor {
 
     pub fn update(&mut self, msg: EditorMsg) -> Task<EditorMsg> {
         match msg {
+            EditorMsg::Action(EditorAction::Resize(w, h)) => {
+                self.set_viewport(w, h);
+                return Task::none();
+            }
             EditorMsg::Action(EditorAction::MouseDown(pos)) => {
                 let cursor_pos = self.pos_from_pixel(pos);
                 self.buffer.selection.anchor = cursor_pos;
@@ -375,7 +404,7 @@ impl CodeEditor {
                     }
                     Key::Character(ref ch) if ctrl && ch.as_str() == "w" => {
                         let enabled = !self.buffer.wrap_config.enabled;
-                        self.buffer.set_wrap(enabled);
+                        self.set_wrap_enabled(enabled);
                     }
                     Key::Character(ref ch) if ctrl && ch.as_str() == "m" => {
                         self.show_minimap = !self.show_minimap;
@@ -468,6 +497,9 @@ impl CodeEditor {
                     _ => {}
                 }
                 self.update_status();
+                if self.buffer.wrap_config.enabled {
+                    self.update_wrap_col();
+                }
                 self.ensure_cursor_visible();
             }
 
@@ -478,12 +510,15 @@ impl CodeEditor {
                     0.0
                 };
                 let eh = self.viewport_h - sp;
-                let max_y = (self.buffer.line_count() as f32 * widget::line_height()
+                let vl_count = self.buffer.visual_lines.len();
+                let max_y = (vl_count as f32 * widget::line_height()
                     + widget::top_pad() * 2.0
                     - eh)
                     .max(0.0);
                 self.scroll_y = (self.scroll_y + dy).clamp(0.0, max_y);
-                self.scroll_x = (self.scroll_x + dx).max(0.0);
+                if !self.buffer.wrap_config.enabled {
+                    self.scroll_x = (self.scroll_x + dx).max(0.0);
+                }
             }
         }
         Task::none()
@@ -529,7 +564,7 @@ impl CodeEditor {
                 text("  ·  ").size(13).color(sep),
                 text(lang).size(13).color(sc),
                 text("  ·  ").size(13).color(sep),
-                text("C-l=ws  C-m=map  C-\\=vim").size(11).color(sep),
+                text("C-l=ws  C-m=map  C-w=wrap  C-\\=vim").size(11).color(sep),
             ]
             .padding(6)
             .spacing(4),
@@ -540,7 +575,9 @@ impl CodeEditor {
             ))),
             ..Default::default()
         })
-        .width(Length::Fill);
+        .width(Length::Fill)
+        .height(Length::Fixed(29.0))
+        .clip(true);
 
         let cmd_bar_color = iced::Color::from_rgb(0.90, 0.92, 0.95);
         let cmd_bar = container(
@@ -712,8 +749,8 @@ impl CodeEditor {
 
     /// Scroll so the cursor is centered (`z`), at top (`t`), or bottom (`b`).
     pub(in crate::editor) fn scroll_cursor_z(&mut self, mode: char) {
-        let line = self.buffer.selection.head.line;
-        let cy = line as f32 * widget::line_height();
+        let vl_idx = self.cursor_visual_line_idx();
+        let cy = vl_idx as f32 * widget::line_height();
         let lh = widget::line_height();
         self.scroll_y = match mode {
             'z' => (cy - self.viewport_h / 2.0 + lh / 2.0).max(0.0),
@@ -723,6 +760,15 @@ impl CodeEditor {
         };
     }
 
+    fn cursor_visual_line_idx(&self) -> usize {
+        let head = self.buffer.selection.head;
+        self.buffer.visual_lines.iter().position(|vl| {
+            vl.doc_line == head.line && vl.col_start <= head.col && head.col <= vl.col_end
+        }).or_else(|| {
+            self.buffer.visual_lines.iter().position(|vl| vl.doc_line == head.line)
+        }).unwrap_or(head.line)
+    }
+
     pub(in crate::editor) fn ensure_cursor_visible(&mut self) {
         let sp = if self.buffer.search.is_open {
             widget::search_panel_height()
@@ -730,11 +776,16 @@ impl CodeEditor {
             0.0
         };
         let vh = self.viewport_h - widget::top_pad() * 2.0 - sp;
-        let cy = self.buffer.selection.head.line as f32 * widget::line_height();
+        let vl_idx = self.cursor_visual_line_idx();
+        let cy = vl_idx as f32 * widget::line_height();
         if cy < self.scroll_y {
             self.scroll_y = cy;
         } else if cy + widget::line_height() > self.scroll_y + vh {
             self.scroll_y = cy + widget::line_height() - vh;
+        }
+        if self.buffer.wrap_config.enabled {
+            self.scroll_x = 0.0;
+            return;
         }
         let head = self.buffer.selection.head;
         let hlt = self.buffer.line_text(head.line);

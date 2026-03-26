@@ -10,6 +10,7 @@ use iced::{Color, Element, Event, Length, Pixels, Point, Rectangle, Renderer, Si
 use super::buffer::{self, Buffer, CursorPos, TAB_WIDTH};
 use super::highlight::TokenKind;
 use super::theme::EditorTheme;
+use super::wrap::VisualLine;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -23,7 +24,7 @@ pub const EDITOR_FONT: iced::Font = iced::Font {
 };
 const LINE_H: f32 = 22.0;
 const GUTTER_PAD: f32 = 16.0;
-const FOLD_COL_W: f32 = 16.0; // fold indicator column width
+const FOLD_COL_W: f32 = 16.0;
 const LEFT_PAD: f32 = 12.0;
 const TOP_PAD: f32 = 8.0;
 const FONT_SZ: f32 = 15.0;
@@ -45,6 +46,8 @@ pub enum EditorAction {
     CursorMoved,
     MouseDown(iced::Point),
     DoubleClick(iced::Point),
+    /// Fired when the widget's pixel bounds change (e.g. window resize).
+    Resize(f32, f32),
 }
 
 // ─── Widget ───────────────────────────────────────────────────────────────────
@@ -95,15 +98,31 @@ impl<'a, Message> SqlEditor<'a, Message> {
     fn minimap_x(&self, bounds: &Rectangle) -> f32 {
         bounds.x + bounds.width - if self.show_minimap { MINIMAP_W + SCROLL_W } else { SCROLL_W }
     }
+
+    /// Find the index into `buffer.visual_lines` for the cursor position.
+    fn cursor_visual_line_idx(&self) -> usize {
+        let head = self.buffer.selection.head;
+        self.buffer.visual_lines.iter().position(|vl| {
+            vl.doc_line == head.line && vl.col_start <= head.col && head.col <= vl.col_end
+        }).or_else(|| {
+            self.buffer.visual_lines.iter().position(|vl| vl.doc_line == head.line)
+        }).unwrap_or(head.line)
+    }
+
     fn pixel_to_pos(&self, bounds: &Rectangle, px: f32, py: f32) -> CursorPos {
-        let rx = px - bounds.x - self.text_x() + self.scroll_x;
         let ry = py - bounds.y - TOP_PAD + self.scroll_y;
-        let line = ((ry / LINE_H).floor().max(0.0) as usize)
-            .min(self.buffer.line_count().saturating_sub(1));
-        let vcol = (rx / CHAR_W).round().max(0.0) as usize;
-        let lt = self.buffer.line_text(line);
-        let logical = buffer::logical_col_of(&lt, vcol);
-        self.buffer.click_to_pos(line, logical)
+        let vl_idx = ((ry / LINE_H).floor().max(0.0) as usize)
+            .min(self.buffer.visual_lines.len().saturating_sub(1));
+        if let Some(vl) = self.buffer.visual_lines.get(vl_idx) {
+            let lt = self.buffer.line_text(vl.doc_line);
+            let vl_vcol_off = buffer::visual_col_of(&lt, vl.col_start);
+            let rx = px - bounds.x - self.text_x() + self.scroll_x;
+            let vcol = (rx / CHAR_W).round().max(0.0) as usize + vl_vcol_off;
+            let logical = buffer::logical_col_of(&lt, vcol);
+            self.buffer.click_to_pos(vl.doc_line, logical)
+        } else {
+            CursorPos::new(self.buffer.line_count().saturating_sub(1), 0)
+        }
     }
 }
 
@@ -115,6 +134,7 @@ pub struct EditorState {
     last_click: std::time::Instant,
     click_count: u32,
     hover_diag: Option<usize>,
+    last_bounds: Rectangle,
 }
 
 impl Default for EditorState {
@@ -123,6 +143,7 @@ impl Default for EditorState {
             is_focused: false, is_dragging: false,
             last_click: std::time::Instant::now(), click_count: 0,
             hover_diag: None,
+            last_bounds: Rectangle::default(),
         }
     }
 }
@@ -137,7 +158,10 @@ impl<'a, Message> SqlEditor<'a, Message> {
         fill(renderer, Rectangle { x: b.x + gw - 1.0, y: b.y, width: 1.0, height: b.height }, th.gutter_border);
     }
 
-    fn draw_line_gutter(&self, renderer: &mut Renderer, b: Rectangle, gw: f32, li: usize, y: f32, active: usize) {
+    /// Draw the line gutter for one visual line.
+    /// `is_first`: true for the first visual line of a doc line; continuation lines get a blank gutter.
+    fn draw_line_gutter(&self, renderer: &mut Renderer, b: Rectangle, gw: f32, li: usize, y: f32, active: usize, is_first: bool) {
+        if !is_first { return; }
         let th = self.theme;
         let num = format!("{}", li + 1);
         let nc = if li == active { th.gutter_active_text } else { th.gutter_text };
@@ -154,8 +178,12 @@ impl<'a, Message> SqlEditor<'a, Message> {
         }
     }
 
-    fn draw_line_highlights(&self, renderer: &mut Renderer, b: Rectangle, gw: f32, tx: f32, li: usize, y: f32, active: usize, st: &EditorState) {
+    fn draw_line_highlights(&self, renderer: &mut Renderer, b: Rectangle, gw: f32, tx: f32, li: usize, y: f32, active: usize, st: &EditorState, vl: &VisualLine) {
         let th = self.theme;
+        let lt = self.buffer.line_text(li);
+        // Visual column offset of the start of this visual line within the doc line.
+        let vl_vcol_off = buffer::visual_col_of(&lt, vl.col_start);
+
         if li == active && st.is_focused {
             fill(renderer, Rectangle {
                 x: b.x + gw, y,
@@ -163,17 +191,27 @@ impl<'a, Message> SqlEditor<'a, Message> {
                 height: LINE_H,
             }, th.current_line_bg);
         }
-        for &vcol in &self.buffer.indent_guides(li) {
-            let gx = b.x + tx + ((vcol.saturating_sub(TAB_WIDTH)) as f32 * CHAR_W) - self.scroll_x;
-            let c = if li == active { th.indent_guide_active } else { th.indent_guide };
-            fill(renderer, Rectangle { x: gx, y, width: INDENT_W, height: LINE_H }, c);
+
+        // Indent guides: only relevant on first visual line of a doc line.
+        if vl.is_first {
+            for &vcol in &self.buffer.indent_guides(li) {
+                let guide_abs = vcol.saturating_sub(TAB_WIDTH);
+                if guide_abs >= vl_vcol_off {
+                    let gx = b.x + tx + ((guide_abs - vl_vcol_off) as f32 * CHAR_W) - self.scroll_x;
+                    let c = if li == active { th.indent_guide_active } else { th.indent_guide };
+                    fill(renderer, Rectangle { x: gx, y, width: INDENT_W, height: LINE_H }, c);
+                }
+            }
         }
+
+        // Search matches clipped to this visual line's byte range.
         if self.buffer.search.is_open {
-            let slt = self.buffer.line_text(li);
             for (i, m) in self.buffer.search.matches.iter().enumerate() {
-                if m.line == li {
-                    let mvs = buffer::visual_col_of(&slt, m.col_start);
-                    let mve = buffer::visual_col_of(&slt, m.col_end);
+                if m.line == li && m.col_start < vl.col_end && m.col_end > vl.col_start {
+                    let ms = m.col_start.max(vl.col_start).min(lt.len());
+                    let me = m.col_end.min(vl.col_end).min(lt.len());
+                    let mvs = buffer::visual_col_of(&lt, ms).saturating_sub(vl_vcol_off);
+                    let mve = buffer::visual_col_of(&lt, me).saturating_sub(vl_vcol_off);
                     let mx = b.x + tx + (mvs as f32 * CHAR_W) - self.scroll_x;
                     let mw = ((mve - mvs) as f32 * CHAR_W).max(CHAR_W);
                     let c = if i == self.buffer.search.current_match { th.search_current_bg } else { th.search_match_bg };
@@ -181,35 +219,51 @@ impl<'a, Message> SqlEditor<'a, Message> {
                 }
             }
         }
+
         if let Some((top, bottom, left_col, right_col)) = self.visual_block {
             if li >= top && li <= bottom {
-                let lt_sel = self.buffer.line_text(li);
-                let vcs = buffer::visual_col_of(&lt_sel, left_col);
-                let vce = buffer::visual_col_of(&lt_sel, right_col + 1);
-                let sx = b.x + tx + (vcs as f32 * CHAR_W) - self.scroll_x;
-                let sw = ((vce - vcs) as f32 * CHAR_W).max(CHAR_W * 0.5);
-                fill(renderer, Rectangle { x: sx, y, width: sw, height: LINE_H }, th.selection);
+                if left_col < vl.col_end && right_col + 1 > vl.col_start {
+                    let vcs = buffer::visual_col_of(&lt, left_col.max(vl.col_start).min(lt.len())).saturating_sub(vl_vcol_off);
+                    let vce = buffer::visual_col_of(&lt, (right_col + 1).min(vl.col_end).min(lt.len())).saturating_sub(vl_vcol_off);
+                    let sx = b.x + tx + (vcs as f32 * CHAR_W) - self.scroll_x;
+                    let sw = ((vce - vcs) as f32 * CHAR_W).max(CHAR_W * 0.5);
+                    fill(renderer, Rectangle { x: sx, y, width: sw, height: LINE_H }, th.selection);
+                }
             }
         } else if !self.buffer.selection.is_caret() {
             let (ss, se) = self.buffer.selection.ordered();
             if li >= ss.line && li <= se.line {
-                let lt_sel = self.buffer.line_text(li);
-                let vcs = buffer::visual_col_of(&lt_sel, if li == ss.line { ss.col } else { 0 });
-                let vce = if li == se.line {
-                    buffer::visual_col_of(&lt_sel, se.col)
-                } else {
-                    buffer::visual_col_of(&lt_sel, lt_sel.chars().count()) + 1
-                };
-                let sx = b.x + tx + (vcs as f32 * CHAR_W) - self.scroll_x;
-                let sw = ((vce - vcs) as f32 * CHAR_W).max(CHAR_W * 0.5);
-                fill(renderer, Rectangle { x: sx, y, width: sw, height: LINE_H }, th.selection);
+                let raw_start = if li == ss.line { ss.col } else { 0 };
+                let raw_end   = if li == se.line { se.col } else { lt.len() };
+
+                // Check that the selection overlaps this visual line's byte range.
+                if raw_start < vl.col_end && raw_end > vl.col_start {
+                    let clip_start = raw_start.max(vl.col_start).min(lt.len());
+                    let clip_end   = raw_end.min(vl.col_end).min(lt.len());
+                    let vcs = buffer::visual_col_of(&lt, clip_start).saturating_sub(vl_vcol_off);
+                    // If the selection extends past the end of this VL (to next VL or next line),
+                    // cover the full width of this VL; add +1 only when crossing a doc-line boundary.
+                    let vce = if raw_end > vl.col_end {
+                        let end_abs = buffer::visual_col_of(&lt, vl.col_end.min(lt.len())).saturating_sub(vl_vcol_off);
+                        end_abs + if li < se.line { 1 } else { 0 }
+                    } else {
+                        buffer::visual_col_of(&lt, clip_end).saturating_sub(vl_vcol_off)
+                    };
+                    if vce > vcs {
+                        let sx = b.x + tx + (vcs as f32 * CHAR_W) - self.scroll_x;
+                        let sw = ((vce - vcs) as f32 * CHAR_W).max(CHAR_W * 0.5);
+                        fill(renderer, Rectangle { x: sx, y, width: sw, height: LINE_H }, th.selection);
+                    }
+                }
             }
         }
+
+        // Bracket matching: only when bracket is within this visual line's byte range.
         if let Some(ref bm) = self.buffer.matched_bracket {
             for &(bl, bc) in &[(bm.open_line, bm.open_col), (bm.close_line, bm.close_col)] {
-                if bl == li {
+                if bl == li && bc >= vl.col_start && bc < vl.col_end {
                     let blt = self.buffer.line_text(bl);
-                    let bvcol = buffer::visual_col_of(&blt, bc);
+                    let bvcol = buffer::visual_col_of(&blt, bc).saturating_sub(vl_vcol_off);
                     let bx = b.x + tx + (bvcol as f32 * CHAR_W) - self.scroll_x;
                     fill(renderer, Rectangle { x: bx, y, width: CHAR_W, height: LINE_H }, th.bracket_match_bg);
                     for rect in [
@@ -223,37 +277,43 @@ impl<'a, Message> SqlEditor<'a, Message> {
         }
     }
 
-    fn draw_line_tokens(&self, renderer: &mut Renderer, b: Rectangle, tx: f32, li: usize, y: f32) {
+    fn draw_line_tokens(&self, renderer: &mut Renderer, b: Rectangle, tx: f32, li: usize, y: f32, vl: &VisualLine) {
         let th = self.theme;
         let lt = self.buffer.line_text(li);
+        let vl_vcol_off = buffer::visual_col_of(&lt, vl.col_start);
+        let render_start = vl.col_start;
+        let render_end = vl.col_end.min(lt.len());
         let lbs = self.buffer.rope.line_to_byte(li);
         let lbe = lbs + lt.len();
 
+        // Build token spans clipped to this visual line's byte range.
         let mut spans: Vec<(usize, usize, TokenKind)> = Vec::new();
         for tok in self.buffer.tokens() {
             if tok.byte_range.end <= lbs || tok.byte_range.start >= lbe { continue; }
-            let s = tok.byte_range.start.max(lbs) - lbs;
-            let e = tok.byte_range.end.min(lbe) - lbs;
+            let s = (tok.byte_range.start.max(lbs) - lbs).max(render_start);
+            let e = (tok.byte_range.end.min(lbe) - lbs).min(render_end);
+            if s >= e { continue; }
             spans.push((s, e, tok.kind));
         }
         spans.sort_by_key(|s| s.0);
         let mut render: Vec<(usize, usize, TokenKind)> = Vec::new();
-        let mut cur = 0;
+        let mut cur = render_start;
         for &(s, e, k) in &spans {
             if s > cur { render.push((cur, s, TokenKind::Plain)); }
             render.push((s, e, k));
             cur = e;
         }
-        if cur < lt.len() { render.push((cur, lt.len(), TokenKind::Plain)); }
+        if cur < render_end { render.push((cur, render_end, TokenKind::Plain)); }
 
         let ws_color = Color { a: 0.35, ..th.gutter_text };
         let trail_start = lt.trim_end().len();
 
         for &(start, end, kind) in &render {
-            if start >= lt.len() { break; }
+            if start >= render_end { break; }
             let sl = &lt[start..end.min(lt.len())];
             if sl.is_empty() { continue; }
             let color = token_color(&kind, th);
+            // Use absolute visual col for tab-stop math; subtract vl_vcol_off for screen X.
             let mut vcol = buffer::visual_col_of(&lt, start);
             let mut seg = String::new();
             let mut seg_vcol = vcol;
@@ -261,21 +321,21 @@ impl<'a, Message> SqlEditor<'a, Message> {
             for ch in sl.chars() {
                 if ch == '\t' {
                     if !seg.is_empty() {
-                        draw_text(renderer, &seg, b.x + tx + (seg_vcol as f32 * CHAR_W) - self.scroll_x, y, color, b.width);
+                        draw_text(renderer, &seg, b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W) - self.scroll_x, y, color, b.width);
                         seg.clear();
                     }
                     if self.show_whitespace {
-                        draw_text(renderer, "▸", b.x + tx + (vcol as f32 * CHAR_W) - self.scroll_x, y, ws_color, CHAR_W);
+                        draw_text(renderer, "▸", b.x + tx + ((vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W) - self.scroll_x, y, ws_color, CHAR_W);
                     }
                     vcol = (vcol / TAB_WIDTH + 1) * TAB_WIDTH;
                     seg_vcol = vcol;
                 } else if self.show_whitespace && ch == ' ' {
                     if !seg.is_empty() {
-                        draw_text(renderer, &seg, b.x + tx + (seg_vcol as f32 * CHAR_W) - self.scroll_x, y, color, b.width);
+                        draw_text(renderer, &seg, b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W) - self.scroll_x, y, color, b.width);
                         seg.clear();
                     }
                     let glyph = if byte_pos >= trail_start { "~" } else { "␣" };
-                    draw_text(renderer, glyph, b.x + tx + (vcol as f32 * CHAR_W) - self.scroll_x, y, ws_color, CHAR_W);
+                    draw_text(renderer, glyph, b.x + tx + ((vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W) - self.scroll_x, y, ws_color, CHAR_W);
                     vcol += 1;
                     seg_vcol = vcol;
                 } else {
@@ -285,35 +345,44 @@ impl<'a, Message> SqlEditor<'a, Message> {
                 byte_pos += ch.len_utf8();
             }
             if !seg.is_empty() {
-                draw_text(renderer, &seg, b.x + tx + (seg_vcol as f32 * CHAR_W) - self.scroll_x, y, color, b.width);
+                draw_text(renderer, &seg, b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W) - self.scroll_x, y, color, b.width);
             }
         }
 
-        if self.show_whitespace {
-            let eol_vcol = buffer::chars_with_vcols(&lt).last().map_or(0, |(_, vc)| vc + 1);
-            draw_text(renderer, "¬", b.x + tx + (eol_vcol as f32 * CHAR_W) - self.scroll_x, y, Color { a: 0.18, ..th.gutter_text }, CHAR_W);
-        }
-        if self.buffer.folds.is_collapsed_start(li) {
-            let hc = self.buffer.folds.hidden_count(li);
-            if hc > 0 {
+        // EOL marker, fold indicator, and diagnostics only on the last visual line for this doc line.
+        let is_last_vl = vl.col_end >= lt.len();
+        if is_last_vl {
+            if self.show_whitespace {
                 let eol_vcol = buffer::chars_with_vcols(&lt).last().map_or(0, |(_, vc)| vc + 1);
-                draw_text(renderer, &format!(" ⋯ {} lines", hc), b.x + tx + (eol_vcol as f32 * CHAR_W) + 8.0 - self.scroll_x, y, th.comment, 200.0);
+                draw_text(renderer, "¬", b.x + tx + ((eol_vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W) - self.scroll_x, y, Color { a: 0.18, ..th.gutter_text }, CHAR_W);
+            }
+            if self.buffer.folds.is_collapsed_start(li) {
+                let hc = self.buffer.folds.hidden_count(li);
+                if hc > 0 {
+                    let eol_vcol = buffer::chars_with_vcols(&lt).last().map_or(0, |(_, vc)| vc + 1);
+                    draw_text(renderer, &format!(" ⋯ {} lines", hc), b.x + tx + ((eol_vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W) + 8.0 - self.scroll_x, y, th.comment, 200.0);
+                }
             }
         }
+
         for diag in &self.buffer.diagnostics {
-            if diag.line == li {
-                let uvs = buffer::visual_col_of(&lt, diag.col_start);
-                let uve = buffer::visual_col_of(&lt, diag.col_end);
-                let ux = b.x + tx + (uvs as f32 * CHAR_W) - self.scroll_x;
-                let uw = ((uve - uvs) as f32 * CHAR_W).max(CHAR_W);
-                let uy = y + LINE_H - ERR_THICK - 1.0;
-                let seg: f32 = 4.0;
-                let mut sx = ux;
-                let mut up = true;
-                while sx < ux + uw {
-                    fill(renderer, Rectangle { x: sx, y: if up { uy - 1.0 } else { uy + 1.0 }, width: seg.min(ux + uw - sx), height: ERR_THICK }, th.error_underline);
-                    sx += seg;
-                    up = !up;
+            if diag.line == li && diag.col_start < vl.col_end && diag.col_end > vl.col_start {
+                let ds = diag.col_start.max(vl.col_start).min(lt.len());
+                let de = diag.col_end.min(render_end).min(lt.len());
+                if ds < de {
+                    let uvs = buffer::visual_col_of(&lt, ds).saturating_sub(vl_vcol_off);
+                    let uve = buffer::visual_col_of(&lt, de).saturating_sub(vl_vcol_off);
+                    let ux = b.x + tx + (uvs as f32 * CHAR_W) - self.scroll_x;
+                    let uw = ((uve - uvs) as f32 * CHAR_W).max(CHAR_W);
+                    let uy = y + LINE_H - ERR_THICK - 1.0;
+                    let seg: f32 = 4.0;
+                    let mut sx = ux;
+                    let mut up = true;
+                    while sx < ux + uw {
+                        fill(renderer, Rectangle { x: sx, y: if up { uy - 1.0 } else { uy + 1.0 }, width: seg.min(ux + uw - sx), height: ERR_THICK }, th.error_underline);
+                        sx += seg;
+                        up = !up;
+                    }
                 }
             }
         }
@@ -322,11 +391,18 @@ impl<'a, Message> SqlEditor<'a, Message> {
     fn draw_cursor(&self, renderer: &mut Renderer, b: Rectangle, tx: f32, editor_h: f32, st: &EditorState) {
         if !st.is_focused { return; }
         let th = self.theme;
-        let cl = self.buffer.selection.head.line;
-        let clt = self.buffer.line_text(cl);
-        let cvcol = buffer::visual_col_of(&clt, self.buffer.selection.head.col);
-        let cy = b.y + TOP_PAD + (cl as f32 * LINE_H) - self.scroll_y;
-        let cx = b.x + tx + (cvcol as f32 * CHAR_W) - self.scroll_x;
+        let head = self.buffer.selection.head;
+        let clt = self.buffer.line_text(head.line);
+        let cvcol_abs = buffer::visual_col_of(&clt, head.col);
+
+        // Find visual line index for cursor position.
+        let vl_idx = self.cursor_visual_line_idx();
+        let vl_vcol_off = self.buffer.visual_lines.get(vl_idx)
+            .map(|vl| buffer::visual_col_of(&clt, vl.col_start))
+            .unwrap_or(0);
+
+        let cy = b.y + TOP_PAD + (vl_idx as f32 * LINE_H) - self.scroll_y;
+        let cx = b.x + tx + ((cvcol_abs.saturating_sub(vl_vcol_off)) as f32 * CHAR_W) - self.scroll_x;
         if cy > b.y - LINE_H && cy < b.y + editor_h {
             if self.block_cursor {
                 fill(renderer, Rectangle { x: cx, y: cy, width: CHAR_W, height: LINE_H }, Color { a: 0.55, ..th.cursor });
@@ -342,8 +418,10 @@ impl<'a, Message> SqlEditor<'a, Message> {
         fill(renderer, Rectangle { x: mx, y: b.y, width: MINIMAP_W, height: editor_h }, th.minimap_bg);
         let total_h = self.buffer.line_count() as f32 * MINIMAP_LINE_H;
         if total_h > 0.0 {
-            let vp_ratio = self.scroll_y / (self.buffer.line_count() as f32 * LINE_H).max(1.0);
-            let vp_h = (editor_h / total_h * editor_h).min(editor_h).max(20.0);
+            // Scroll ratio uses visual line count so the viewport indicator stays accurate.
+            let total_visual_h = (self.buffer.visual_lines.len() as f32 * LINE_H).max(1.0);
+            let vp_ratio = self.scroll_y / total_visual_h;
+            let vp_h = (editor_h / total_visual_h * editor_h).min(editor_h).max(20.0);
             let vp_y = b.y + vp_ratio * (editor_h - vp_h);
             fill(renderer, Rectangle { x: mx, y: vp_y, width: MINIMAP_W, height: vp_h }, th.minimap_viewport);
         }
@@ -372,7 +450,7 @@ impl<'a, Message> SqlEditor<'a, Message> {
         let th = self.theme;
         let sb_x = b.x + b.width - SCROLL_W;
         fill(renderer, Rectangle { x: sb_x, y: b.y, width: SCROLL_W, height: editor_h }, th.scrollbar_track);
-        let total = self.buffer.line_count() as f32 * LINE_H + TOP_PAD * 2.0;
+        let total = self.buffer.visual_lines.len() as f32 * LINE_H + TOP_PAD * 2.0;
         if total > editor_h {
             let th_h = ((editor_h / total) * editor_h).max(24.0);
             let th_y = b.y + (self.scroll_y / (total - editor_h)) * (editor_h - th_h);
@@ -399,7 +477,10 @@ impl<'a, Message> SqlEditor<'a, Message> {
         let th = self.theme;
         if let Some(di) = st.hover_diag {
             if let Some(diag) = self.buffer.diagnostics.get(di) {
-                let dy = b.y + TOP_PAD + (diag.line as f32 * LINE_H) - self.scroll_y + LINE_H + 4.0;
+                let diag_vl_idx = self.buffer.visual_lines.iter().position(|vl| {
+                    vl.doc_line == diag.line && vl.col_start <= diag.col_start && diag.col_start <= vl.col_end
+                }).unwrap_or(diag.line);
+                let dy = b.y + TOP_PAD + (diag_vl_idx as f32 * LINE_H) - self.scroll_y + LINE_H + 4.0;
                 let dx = b.x + tx + (diag.col_start as f32 * CHAR_W) - self.scroll_x;
                 let tw = (diag.message.len() as f32 * CHAR_W * 0.62).min(400.0).max(150.0);
                 let th2 = 28.0;
@@ -444,24 +525,34 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
         {
             self.draw_background(renderer, b, gw);
 
-            let first = (self.scroll_y / LINE_H).floor() as usize;
-            let last = (first + (editor_h / LINE_H).ceil() as usize + 2).min(self.buffer.line_count());
-            let active = self.buffer.selection.head.line;
+            // Clip text content to the region left of the minimap/scrollbar.
+            let mm_x = self.minimap_x(&b);
+            let content_clip = Rectangle { x: b.x, y: b.y, width: mm_x - b.x, height: editor_h };
+            renderer.start_layer(content_clip);
+            {
+                let vls = &self.buffer.visual_lines;
+                let first = (self.scroll_y / LINE_H).floor() as usize;
+                let last = (first + (editor_h / LINE_H).ceil() as usize + 2).min(vls.len());
+                let active = self.buffer.selection.head.line;
 
-            for li in first..last {
-                if self.buffer.folds.is_hidden(li) { continue; }
-                let y = b.y + TOP_PAD + (li as f32 * LINE_H) - self.scroll_y;
-                if y + LINE_H < b.y || y > b.y + editor_h { continue; }
-                self.draw_line_gutter(renderer, b, gw, li, y, active);
-                self.draw_line_highlights(renderer, b, gw, tx, li, y, active, st);
-                self.draw_line_tokens(renderer, b, tx, li, y);
+                for vi in first..last {
+                    if let Some(vl) = vls.get(vi) {
+                        let y = b.y + TOP_PAD + (vi as f32 * LINE_H) - self.scroll_y;
+                        if y + LINE_H < b.y || y > b.y + editor_h { continue; }
+                        self.draw_line_gutter(renderer, b, gw, vl.doc_line, y, active, vl.is_first);
+                        self.draw_line_highlights(renderer, b, gw, tx, vl.doc_line, y, active, st, vl);
+                        self.draw_line_tokens(renderer, b, tx, vl.doc_line, y, vl);
+                    }
+                }
+
+                self.draw_cursor(renderer, b, tx, editor_h, st);
+                self.draw_tooltip(renderer, b, tx, st);
             }
+            renderer.end_layer();
 
-            self.draw_cursor(renderer, b, tx, editor_h, st);
             if self.show_minimap { self.draw_minimap(renderer, b, editor_h); }
             self.draw_scrollbar(renderer, b, editor_h);
             if self.buffer.search.is_open { self.draw_search_panel(renderer, b); }
-            self.draw_tooltip(renderer, b, tx, st);
         }
         renderer.end_layer();
     }
@@ -487,10 +578,8 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     }
                     st.last_click = now;
 
-                    // Check fold gutter click
                     let gw = self.gutter_w();
                     if pos.x >= b.x + gw - FOLD_COL_W && pos.x <= b.x + gw {
-                        // fold toggle handled by app
                         shell.publish((self.on_action)(EditorAction::CursorMoved));
                         shell.capture_event();
                         return;
@@ -530,6 +619,12 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
             }
             _ => {}
         }
+
+        // Detect widget resize and notify CodeEditor so it can recompute wrap_col.
+        if b.width != st.last_bounds.width || b.height != st.last_bounds.height {
+            st.last_bounds = b;
+            shell.publish((self.on_action)(EditorAction::Resize(b.width, b.height)));
+        }
     }
 
     fn mouse_interaction(
@@ -564,8 +659,6 @@ fn fill_r(r: &mut Renderer, rect: Rectangle, color: Color, radius: f32) {
 }
 
 fn draw_text(r: &mut Renderer, content: &str, x: f32, y: f32, color: Color, max_w: f32) {
-    // Offset by half the leading so glyphs are visually centered within LINE_H.
-    // align_y: Top means position.y is the top of the glyph box — no ambiguity.
     let text_y = y + (LINE_H - FONT_SZ) / 2.0;
     r.fill_text(
         iced::advanced::text::Text {
@@ -609,13 +702,19 @@ pub fn pixel_to_pos(
     buf: &Buffer, bounds: &Rectangle, gutter_w: f32,
     scroll_x: f32, scroll_y: f32, px: f32, py: f32,
 ) -> CursorPos {
-    let rx = px - bounds.x - gutter_w - LEFT_PAD + scroll_x;
     let ry = py - bounds.y - TOP_PAD + scroll_y;
-    let line = ((ry / LINE_H).floor().max(0.0) as usize).min(buf.line_count().saturating_sub(1));
-    let vcol = (rx / CHAR_W).round().max(0.0) as usize;
-    let lt = buf.line_text(line);
-    let logical = buffer::logical_col_of(&lt, vcol);
-    buf.click_to_pos(line, logical)
+    let vl_idx = ((ry / LINE_H).floor().max(0.0) as usize)
+        .min(buf.visual_lines.len().saturating_sub(1));
+    if let Some(vl) = buf.visual_lines.get(vl_idx) {
+        let lt = buf.line_text(vl.doc_line);
+        let vl_vcol_off = buffer::visual_col_of(&lt, vl.col_start);
+        let rx = px - bounds.x - gutter_w - LEFT_PAD + scroll_x;
+        let vcol = (rx / CHAR_W).round().max(0.0) as usize + vl_vcol_off;
+        let logical = buffer::logical_col_of(&lt, vcol);
+        buf.click_to_pos(vl.doc_line, logical)
+    } else {
+        CursorPos::new(buf.line_count().saturating_sub(1), 0)
+    }
 }
 
 pub fn gutter_width(line_count: usize) -> f32 {
@@ -625,6 +724,7 @@ pub fn gutter_width(line_count: usize) -> f32 {
 pub fn visible_line_count(h: f32) -> usize { ((h - TOP_PAD) / LINE_H).ceil() as usize }
 pub const fn line_height() -> f32 { LINE_H }
 pub const fn top_pad() -> f32 { TOP_PAD }
+pub const fn left_pad() -> f32 { LEFT_PAD }
 pub const fn scrollbar_width() -> f32 { SCROLL_W }
 pub const fn minimap_width() -> f32 { MINIMAP_W }
 pub const fn search_panel_height() -> f32 { SEARCH_PANEL_H }

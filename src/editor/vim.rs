@@ -139,7 +139,7 @@ impl CodeEditor {
                         "f" | "F" => self.buffer.search_open(),
                         "w" | "W" => {
                             let e = !self.buffer.wrap_config.enabled;
-                            self.buffer.set_wrap(e);
+                            self.set_wrap_enabled(e);
                         }
                         "m" | "M" => self.show_minimap = !self.show_minimap,
                         "l" | "L" => self.show_whitespace = !self.show_whitespace,
