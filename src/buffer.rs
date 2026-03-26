@@ -1,6 +1,6 @@
 use ropey::Rope;
 use crate::folding::FoldState;
-use crate::highlight::{Highlighter, SyntaxLanguage, SyntaxToken};
+use crate::highlight::{Highlighter, SyntaxLanguage, SyntaxToken, TokenKind};
 use crate::search::SearchState;
 use crate::wrap::{self, VisualLine, WrapConfig};
 
@@ -922,10 +922,96 @@ impl Buffer {
 
     fn collect_diagnostics(&mut self) {
         self.diagnostics.clear();
-        let tree = self.highlighter.tree().cloned();
-        if let Some(tree) = tree {
-            self.walk_errors(tree.root_node());
+        match self.highlighter.language {
+            SyntaxLanguage::Rust => {
+                let tree = self.highlighter.tree().cloned();
+                if let Some(tree) = tree { self.walk_errors(tree.root_node()); }
+            }
+            SyntaxLanguage::Sql => self.collect_sql_diagnostics(),
         }
+    }
+
+    /// Lightweight structural diagnostics for the manual SQL token stream.
+    /// Detects: misspelled SQL keywords (via edit distance), unmatched `)`, unclosed `(`.
+    fn collect_sql_diagnostics(&mut self) {
+        let tokens = self.highlighter.tokens.clone();
+        let text = self.rope.to_string();
+        let mut paren_stack: Vec<(usize, usize)> = Vec::new();
+        let mut at_stmt_start = true;
+
+        for tok in &tokens {
+            if tok.byte_range.start >= text.len() { continue; }
+            let slice = match text.get(tok.byte_range.clone()) {
+                Some(s) => s,
+                None => continue,
+            };
+            match tok.kind {
+                // Comments are transparent — don't affect statement state.
+                TokenKind::Comment => {}
+                TokenKind::Punctuation => {
+                    match slice {
+                        "(" => {
+                            let (line, col) = self.byte_to_char_col(tok.byte_range.start);
+                            paren_stack.push((line, col));
+                            at_stmt_start = false;
+                        }
+                        ")" => {
+                            at_stmt_start = false;
+                            if paren_stack.pop().is_none() {
+                                let (line, col) = self.byte_to_char_col(tok.byte_range.start);
+                                self.diagnostics.push(Diagnostic {
+                                    line, col_start: col, col_end: col + 1,
+                                    message: "Unmatched `)`".into(),
+                                });
+                            }
+                        }
+                        ";" => at_stmt_start = true,
+                        _ => at_stmt_start = false,
+                    }
+                }
+                TokenKind::Keyword => at_stmt_start = false,
+                TokenKind::Identifier if at_stmt_start => {
+                    // First word of a statement is not a recognized keyword.
+                    let (line, col) = self.byte_to_char_col(tok.byte_range.start);
+                    let msg = match sql_keyword_near_miss(slice) {
+                        Some(kw) => format!("Unrecognized SQL command `{}`, did you mean `{}`?", slice, kw),
+                        None     => format!("Unrecognized SQL command `{}`", slice),
+                    };
+                    self.diagnostics.push(Diagnostic {
+                        line, col_start: col, col_end: col + slice.chars().count(), message: msg,
+                    });
+                    at_stmt_start = false;
+                }
+                TokenKind::Identifier => {
+                    // Mid-statement: flag all-uppercase identifiers that look like
+                    // mistyped SQL keywords (edit distance ≤ 1, including transpositions).
+                    if let Some(kw) = sql_keyword_near_miss(slice) {
+                        let (line, col) = self.byte_to_char_col(tok.byte_range.start);
+                        self.diagnostics.push(Diagnostic {
+                            line, col_start: col, col_end: col + slice.chars().count(),
+                            message: format!("Did you mean `{}`?", kw),
+                        });
+                    }
+                    at_stmt_start = false;
+                }
+                _ => at_stmt_start = false,
+            }
+        }
+
+        for (line, col) in paren_stack {
+            self.diagnostics.push(Diagnostic {
+                line, col_start: col, col_end: col + 1,
+                message: "Unclosed `(`".into(),
+            });
+        }
+    }
+
+    /// Convert a byte offset in the document to (line, char-column).
+    fn byte_to_char_col(&self, byte: usize) -> (usize, usize) {
+        let char_idx = self.rope.byte_to_char(byte);
+        let line = self.rope.char_to_line(char_idx);
+        let col = char_idx - self.rope.line_to_char(line);
+        (line, col)
     }
 
     fn walk_errors<'t>(&mut self, node: tree_sitter::Node<'t>) {
@@ -960,4 +1046,55 @@ impl Buffer {
         while c <= spaces { g.push(c); c += 4; }
         g
     }
+}
+
+// ── SQL keyword typo detection ─────────────────────────────────────────────────
+
+/// Returns the closest SQL keyword if `word` is an all-uppercase identifier
+/// within edit distance 1 (including transpositions) of a known keyword.
+/// Only words of 3+ characters are checked to avoid noisy short-word matches.
+fn sql_keyword_near_miss(word: &str) -> Option<&'static str> {
+    if word.len() < 3 || !word.bytes().all(|b| b.is_ascii_uppercase()) {
+        return None;
+    }
+    const KEYWORDS: &[&str] = &[
+        "SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE",
+        "CREATE", "DROP", "ALTER", "TABLE", "INDEX", "INTO", "VALUES",
+        "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "CROSS", "FULL",
+        "ORDER", "GROUP", "HAVING", "LIMIT", "OFFSET", "UNION",
+        "EXCEPT", "INTERSECT", "DISTINCT", "EXISTS", "BETWEEN",
+        "PARTITION", "OVER", "MATERIALIZED", "VIEW", "WITH",
+        "RETURNING", "TRUNCATE", "VACUUM", "ANALYZE", "EXPLAIN",
+        "COMMIT", "ROLLBACK", "BEGIN", "TRANSACTION", "GRANT", "REVOKE",
+    ];
+    for &kw in KEYWORDS {
+        if word == kw { return None; } // exact match → recognized, not an error
+        if osa_distance(word.as_bytes(), kw.as_bytes()) == 1 {
+            return Some(kw);
+        }
+    }
+    None
+}
+
+/// Optimal String Alignment distance (edit distance + adjacent transpositions).
+/// Transpositions count as 1 edit, so FORM↔FROM and WHER↔WHERE both score 1.
+fn osa_distance(a: &[u8], b: &[u8]) -> usize {
+    let (m, n) = (a.len(), b.len());
+    // Length gap > 1 means distance ≥ 2; return early to skip the allocation.
+    if m.abs_diff(n) > 1 { return m.abs_diff(n); }
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in 0..=m { dp[i][0] = i; }
+    for j in 0..=n { dp[0][j] = j; }
+    for i in 1..=m {
+        for j in 1..=n {
+            let cost = (a[i - 1] != b[j - 1]) as usize;
+            dp[i][j] = (dp[i-1][j] + 1)
+                .min(dp[i][j-1] + 1)
+                .min(dp[i-1][j-1] + cost);
+            if i > 1 && j > 1 && a[i-1] == b[j-2] && a[i-2] == b[j-1] {
+                dp[i][j] = dp[i][j].min(dp[i-2][j-2] + 1);
+            }
+        }
+    }
+    dp[m][n]
 }
