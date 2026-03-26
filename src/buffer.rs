@@ -208,6 +208,8 @@ pub struct Buffer {
     desired_col: Option<usize>,
     /// Clipboard contents (internal; real clipboard via iced Clipboard trait).
     pub clipboard: String,
+    /// True when `clipboard` holds whole lines (dd/yy), so `p`/`P` paste linewise.
+    pub clipboard_is_line: bool,
 }
 
 impl Buffer {
@@ -237,6 +239,7 @@ impl Buffer {
             undo_stack: undo,
             desired_col: None,
             clipboard: String::new(),
+            clipboard_is_line: false,
         };
         buf.post_edit();
         buf
@@ -360,6 +363,7 @@ impl Buffer {
         let text = self.selected_text();
         if !text.is_empty() {
             self.clipboard = text.clone();
+            self.clipboard_is_line = false;
         }
         text
     }
@@ -388,10 +392,94 @@ impl Buffer {
             let after = &text[text.rfind('\n').unwrap() + 1..];
             CursorPos::new(pos.line + newlines, after.len())
         } else {
-            CursorPos::new(pos.line, pos.col + text.len())
+            CursorPos::new(pos.line, pos.col + text.chars().count())
         };
         self.selection = Selection::caret(new_pos);
         self.post_edit();
+    }
+
+    /// Yank `count` whole lines starting at `line` into the internal clipboard.
+    /// Returns the yanked text so callers can also write to the system clipboard.
+    pub fn yank_lines(&mut self, line: usize, count: usize) -> String {
+        let last = (line + count - 1).min(self.line_count().saturating_sub(1));
+        let start_ci = self.rope.line_to_char(line);
+        let end_ci = if last + 1 < self.rope.len_lines() {
+            self.rope.line_to_char(last + 1)
+        } else {
+            self.rope.len_chars()
+        };
+        let mut text: String = self.rope.slice(start_ci..end_ci).to_string();
+        // Ensure the yanked text always ends with a newline so paste works correctly.
+        if !text.ends_with('\n') { text.push('\n'); }
+        self.clipboard = text.clone();
+        self.clipboard_is_line = true;
+        text
+    }
+
+    /// Delete `count` whole lines starting at `line`.
+    pub fn delete_lines(&mut self, line: usize, count: usize) {
+        let last = (line + count - 1).min(self.line_count().saturating_sub(1));
+        self.save_undo(EditKind::Delete);
+        let start_ci = self.rope.line_to_char(line);
+        let end_ci = if last + 1 < self.rope.len_lines() {
+            self.rope.line_to_char(last + 1)
+        } else if line > 0 {
+            // Last line with no trailing newline: delete preceding newline too
+            let prev_end = self.rope.line_to_char(line);
+            let prev_line_start = self.rope.line_to_char(line - 1);
+            let prev_text: String = self.rope.slice(prev_line_start..prev_end).to_string();
+            let trim = prev_text.trim_end_matches('\n').trim_end_matches('\r').len();
+            prev_line_start + trim
+        } else {
+            self.rope.len_chars()
+        };
+        let real_start = start_ci.min(end_ci);
+        let real_end = start_ci.max(end_ci);
+        self.rope.remove(real_start..real_end);
+        let new_line = line.min(self.line_count().saturating_sub(1));
+        self.selection = Selection::caret(CursorPos::new(new_line, 0));
+        self.post_edit();
+    }
+
+    /// Paste linewise clipboard content as new line(s) below the current line.
+    pub fn paste_line_below(&mut self) {
+        if self.clipboard.is_empty() { return; }
+        self.save_undo(EditKind::Paste);
+        let line = self.selection.head.line;
+        // Insert after the newline at end of current line
+        let insert_ci = if line + 1 < self.rope.len_lines() {
+            self.rope.line_to_char(line + 1)
+        } else {
+            // No trailing newline on last line — add one first
+            let end = self.rope.len_chars();
+            self.rope.insert_char(end, '\n');
+            end + 1
+        };
+        let text = self.clipboard.clone();
+        self.rope.insert(insert_ci, &text);
+        self.selection = Selection::caret(CursorPos::new(line + 1, 0));
+        self.post_edit();
+    }
+
+    /// Paste linewise clipboard content as new line(s) above the current line.
+    pub fn paste_line_above(&mut self) {
+        if self.clipboard.is_empty() { return; }
+        self.save_undo(EditKind::Paste);
+        let line = self.selection.head.line;
+        let insert_ci = self.rope.line_to_char(line);
+        let text = self.clipboard.clone();
+        self.rope.insert(insert_ci, &text);
+        self.selection = Selection::caret(CursorPos::new(line, 0));
+        self.post_edit();
+    }
+
+    /// Select the full extent of `count` lines starting at the cursor's line.
+    /// Sets anchor to line start and head to end of last line (exclusive of newline).
+    pub fn select_lines(&mut self, count: usize) {
+        let line = self.selection.head.line;
+        let last = (line + count - 1).min(self.line_count().saturating_sub(1));
+        self.selection.anchor = CursorPos::new(line, 0);
+        self.selection.head = CursorPos::new(last, self.line_len(last));
     }
 
     // ── Editing ───────────────────────────────────────────────────────────

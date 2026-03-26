@@ -173,7 +173,7 @@ fn main() {
 "#;
 
 #[derive(Debug, Clone, PartialEq)]
-enum VimMode { Normal, Insert, Command }
+enum VimMode { Normal, Insert, Visual, VisualLine, Command }
 
 struct App {
     buffer: Buffer,
@@ -188,6 +188,10 @@ struct App {
     vim_mode: VimMode,
     vim_command: String,
     pending_g: bool,
+    /// Digit characters accumulated before a motion/operator (e.g. "12" for 12j).
+    vim_count: String,
+    /// Pending operator: 'd' for `d`, 'y' for `y` (waiting for second char).
+    pending_op: Option<char>,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +223,8 @@ impl App {
             vim_mode: VimMode::Normal,
             vim_command: String::new(),
             pending_g: false,
+            vim_count: String::new(),
+            pending_op: None,
         }, Task::none())
     }
 
@@ -273,6 +279,10 @@ impl App {
                 // ── Vim normal mode ───────────────────────────────────
                 if self.vim_mode == VimMode::Normal {
                     return self.handle_vim_normal_key(key, mods, text);
+                }
+                // ── Vim visual modes ──────────────────────────────────
+                if self.vim_mode == VimMode::Visual || self.vim_mode == VimMode::VisualLine {
+                    return self.handle_vim_visual_key(key, mods, text);
                 }
                 // ── Insert mode: Escape → Normal ──────────────────────
                 if matches!(&key, Key::Named(keyboard::key::Named::Escape))
@@ -512,9 +522,11 @@ impl App {
 
     fn update_status(&mut self) {
         let mode = match self.vim_mode {
-            VimMode::Normal  => "NOR",
-            VimMode::Insert  => "INS",
-            VimMode::Command => "CMD",
+            VimMode::Normal     => "NOR",
+            VimMode::Insert     => "INS",
+            VimMode::Visual     => "VIS",
+            VimMode::VisualLine => "V-LINE",
+            VimMode::Command    => "CMD",
         };
         let p = self.buffer.selection.head;
         let dc = self.buffer.diagnostics.len();
@@ -563,6 +575,8 @@ impl App {
             Key::Named(Named::Escape) => {
                 if self.buffer.search.is_open { self.buffer.search_close(); }
                 self.buffer.selection.anchor = self.buffer.selection.head;
+                self.vim_count.clear();
+                self.pending_op = None;
             }
             Key::Named(Named::ArrowLeft)  if ctrl => self.buffer.move_word_left(shift),
             Key::Named(Named::ArrowRight) if ctrl => self.buffer.move_word_right(shift),
@@ -611,6 +625,48 @@ impl App {
                         _ => {}
                     }
                 } else {
+                    // ─ Count prefix digits ─────────────────────────────────
+                    // `0` is a digit only when there are already digits (else it's move-to-col-0)
+                    let is_count_digit = ch.len() == 1
+                        && ch.chars().next().map_or(false, |c| c.is_ascii_digit())
+                        && (ch != "0" || !self.vim_count.is_empty());
+
+                    if is_count_digit {
+                        self.vim_count.push_str(ch);
+                        // Don't clear pending_g — `5gg` isn't standard but be forgiving
+                        self.update_status();
+                        return Task::none();
+                    }
+
+                    let count = self.vim_count.parse::<usize>().unwrap_or(1).max(1);
+                    self.vim_count.clear();
+
+                    // ─ Pending operator + second char ──────────────────────
+                    if let Some(op) = self.pending_op.take() {
+                        match (op, ch) {
+                            ('d', "d") => {
+                                // dd: yank then delete `count` lines
+                                let line = self.buffer.selection.head.line;
+                                let yanked = self.buffer.yank_lines(line, count);
+                                self.buffer.delete_lines(line, count);
+                                self.update_status();
+                                self.ensure_cursor_visible();
+                                return iced::clipboard::write(yanked);
+                            }
+                            ('y', "y") => {
+                                // yy: yank `count` lines, no deletion
+                                let line = self.buffer.selection.head.line;
+                                let yanked = self.buffer.yank_lines(line, count);
+                                self.update_status();
+                                return iced::clipboard::write(yanked);
+                            }
+                            _ => {} // unrecognised two-char sequence — silently drop
+                        }
+                        self.update_status();
+                        self.ensure_cursor_visible();
+                        return Task::none();
+                    }
+
                     match ch {
                         // ─ Enter insert mode ───────────────────────────────
                         "i" => self.vim_mode = VimMode::Insert,
@@ -623,22 +679,56 @@ impl App {
                             self.vim_mode = VimMode::Insert;
                         }
                         "O" => {
-                            // Open line above: split at line start, then step onto the new blank line
                             self.buffer.move_home(false);
                             self.buffer.insert_newline();
                             self.buffer.move_up(false);
                             self.vim_mode = VimMode::Insert;
                         }
+                        // ─ Visual modes ────────────────────────────────────
+                        "v" => {
+                            self.vim_mode = VimMode::Visual;
+                            // Anchor stays at current position; head moves with motions
+                            self.buffer.selection.anchor = self.buffer.selection.head;
+                        }
+                        "V" => {
+                            self.vim_mode = VimMode::VisualLine;
+                            self.buffer.select_lines(count);
+                        }
+                        // ─ Operators (pending second char) ─────────────────
+                        "d" => self.pending_op = Some('d'),
+                        "y" => self.pending_op = Some('y'),
+                        // ─ Paste ───────────────────────────────────────────
+                        "p" => {
+                            if self.buffer.clipboard_is_line {
+                                for _ in 0..count { self.buffer.paste_line_below(); }
+                            } else {
+                                let clip = self.buffer.clipboard.clone();
+                                if !clip.is_empty() {
+                                    self.buffer.move_right(false);
+                                    for _ in 0..count { self.buffer.paste(&clip); }
+                                }
+                            }
+                        }
+                        "P" => {
+                            if self.buffer.clipboard_is_line {
+                                for _ in 0..count { self.buffer.paste_line_above(); }
+                            } else {
+                                let clip = self.buffer.clipboard.clone();
+                                if !clip.is_empty() {
+                                    for _ in 0..count { self.buffer.paste(&clip); }
+                                }
+                            }
+                        }
                         // ─ Enter command bar ───────────────────────────────
                         ":" => self.vim_mode = VimMode::Command,
-                        // ─ Motions ─────────────────────────────────────────
-                        "h" => self.buffer.move_left(false),
-                        "j" => self.buffer.move_down(false),
-                        "k" => self.buffer.move_up(false),
-                        "l" => self.buffer.move_right(false),
-                        "w" => self.buffer.move_word_right(false),
-                        "b" => self.buffer.move_word_left(false),
-                        "e" => self.buffer.move_word_right(false),
+                        // ─ Motions (count-aware) ───────────────────────────
+                        "h" => { for _ in 0..count { self.buffer.move_left(false); } }
+                        "j" => { for _ in 0..count { self.buffer.move_down(false); } }
+                        "k" => { for _ in 0..count { self.buffer.move_up(false); } }
+                        "l" => { for _ in 0..count { self.buffer.move_right(false); } }
+                        "w" => { for _ in 0..count { self.buffer.move_word_right(false); } }
+                        "b" => { for _ in 0..count { self.buffer.move_word_left(false); } }
+                        "e" => { for _ in 0..count { self.buffer.move_word_right(false); } }
                         "0" => self.buffer.move_home(false),
                         "$" => self.buffer.move_end(false),
                         "^" => self.buffer.move_home(false),
@@ -646,8 +736,8 @@ impl App {
                         "g"          => self.pending_g = true,
                         "G"          => self.buffer.move_to_end(false),
                         // ─ Editing ─────────────────────────────────────────
-                        "x" => self.buffer.delete(),
-                        "X" => self.buffer.backspace(),
+                        "x" => { for _ in 0..count { self.buffer.delete(); } }
+                        "X" => { for _ in 0..count { self.buffer.backspace(); } }
                         "u" => self.buffer.undo(),
                         // ─ Search navigation ───────────────────────────────
                         "n" => { self.buffer.search_next(); }
@@ -657,6 +747,143 @@ impl App {
                 }
             }
             _ => {}
+        }
+
+        self.update_status();
+        self.ensure_cursor_visible();
+        Task::none()
+    }
+
+    // ── Vim visual mode key handler ───────────────────────────────────────────
+
+    fn handle_vim_visual_key(&mut self, key: Key, mods: keyboard::Modifiers, text: Option<String>) -> Task<Msg> {
+        use keyboard::key::Named;
+        let ctrl = mods.command();
+        let is_line = self.vim_mode == VimMode::VisualLine;
+
+        // Count digit accumulation
+        if let Key::Character(_) = &key {
+            let ch = text.as_deref().unwrap_or("");
+            let is_count_digit = ch.len() == 1
+                && ch.chars().next().map_or(false, |c| c.is_ascii_digit())
+                && (ch != "0" || !self.vim_count.is_empty());
+            if is_count_digit {
+                self.vim_count.push_str(ch);
+                return Task::none();
+            }
+        }
+        let count = self.vim_count.parse::<usize>().unwrap_or(1).max(1);
+        self.vim_count.clear();
+
+        match key {
+            Key::Named(Named::Escape) => {
+                self.buffer.selection.anchor = self.buffer.selection.head;
+                self.vim_mode = VimMode::Normal;
+            }
+            Key::Named(Named::ArrowLeft)  => self.buffer.move_left(true),
+            Key::Named(Named::ArrowRight) => self.buffer.move_right(true),
+            Key::Named(Named::ArrowUp)    => self.buffer.move_up(true),
+            Key::Named(Named::ArrowDown)  => self.buffer.move_down(true),
+            Key::Character(_) => {
+                let ch = text.as_deref().unwrap_or("");
+                if ctrl {
+                    match ch {
+                        "f" | "F" => self.buffer.search_open(),
+                        _ => {}
+                    }
+                } else {
+                    match ch {
+                        // ─ Motions extend the selection ─────────────────────
+                        "h" => { for _ in 0..count { self.buffer.move_left(true); } }
+                        "j" => { for _ in 0..count { self.buffer.move_down(true); } }
+                        "k" => { for _ in 0..count { self.buffer.move_up(true); } }
+                        "l" => { for _ in 0..count { self.buffer.move_right(true); } }
+                        "w" => { for _ in 0..count { self.buffer.move_word_right(true); } }
+                        "b" => { for _ in 0..count { self.buffer.move_word_left(true); } }
+                        "0" | "^" => self.buffer.move_home(true),
+                        "$"       => self.buffer.move_end(true),
+                        "G"       => self.buffer.move_to_end(true),
+                        "g"       => self.buffer.move_to_start(true),
+                        // ─ V-line: snap selection to whole lines ───────────
+                        // (handled by yank/delete below for line mode)
+                        // ─ Operators ───────────────────────────────────────
+                        "y" => {
+                            let yanked = if is_line {
+                                let (s, e) = self.buffer.selection.ordered();
+                                let lcount = e.line - s.line + 1;
+                                self.buffer.yank_lines(s.line, lcount)
+                            } else {
+                                let t = self.buffer.copy();
+                                t
+                            };
+                            self.buffer.selection.anchor = self.buffer.selection.head;
+                            self.vim_mode = VimMode::Normal;
+                            self.update_status();
+                            self.ensure_cursor_visible();
+                            if !yanked.is_empty() {
+                                return iced::clipboard::write(yanked);
+                            }
+                            return Task::none();
+                        }
+                        "d" | "x" => {
+                            if is_line {
+                                let (s, e) = self.buffer.selection.ordered();
+                                let lcount = e.line - s.line + 1;
+                                let yanked = self.buffer.yank_lines(s.line, lcount);
+                                self.buffer.delete_lines(s.line, lcount);
+                                self.vim_mode = VimMode::Normal;
+                                self.update_status();
+                                self.ensure_cursor_visible();
+                                return iced::clipboard::write(yanked);
+                            } else {
+                                let yanked = self.buffer.cut();
+                                self.vim_mode = VimMode::Normal;
+                                self.update_status();
+                                self.ensure_cursor_visible();
+                                if !yanked.is_empty() {
+                                    return iced::clipboard::write(yanked);
+                                }
+                                return Task::none();
+                            }
+                        }
+                        // ─ Switch visual sub-mode ───────────────────────────
+                        "v" => {
+                            self.vim_mode = if is_line { VimMode::Visual } else { VimMode::Normal };
+                            if self.vim_mode == VimMode::Normal {
+                                self.buffer.selection.anchor = self.buffer.selection.head;
+                            }
+                        }
+                        "V" => {
+                            if is_line {
+                                self.vim_mode = VimMode::Normal;
+                                self.buffer.selection.anchor = self.buffer.selection.head;
+                            } else {
+                                self.vim_mode = VimMode::VisualLine;
+                                let (s, e) = self.buffer.selection.ordered();
+                                let lcount = e.line - s.line + 1;
+                                self.buffer.select_lines(lcount);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // In V-LINE mode keep the selection snapped to full lines
+        if self.vim_mode == VimMode::VisualLine {
+            let (s, e) = self.buffer.selection.ordered();
+            let lcount = e.line - s.line + 1;
+            // Determine which end the head is on and expand accordingly
+            if self.buffer.selection.head >= self.buffer.selection.anchor {
+                self.buffer.selection.anchor = CursorPos::new(s.line, 0);
+                self.buffer.selection.head = CursorPos::new(e.line, self.buffer.line_len(e.line));
+            } else {
+                self.buffer.selection.head = CursorPos::new(s.line, 0);
+                self.buffer.selection.anchor = CursorPos::new(e.line, self.buffer.line_len(e.line));
+            }
+            let _ = lcount; // used above
         }
 
         self.update_status();
