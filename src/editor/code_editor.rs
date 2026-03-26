@@ -18,6 +18,12 @@ pub enum EditorMsg {
     Scroll(f32, f32),
     MouseMove(iced::Point),
     MouseUp,
+    /// Paste system-clipboard text at the current cursor position.
+    Paste(String),
+    /// Paste system-clipboard text after the current cursor (vim `p` semantics).
+    PasteAfter(String),
+    /// Replace the current visual selection with system-clipboard text (vim visual `p`).
+    VisualPaste(String),
 }
 
 // ─── CodeEditor ───────────────────────────────────────────────────────────────
@@ -212,6 +218,53 @@ impl CodeEditor {
                 self.is_dragging = false;
             }
 
+            EditorMsg::Paste(text) => {
+                if !text.is_empty() {
+                    self.buffer.clipboard = text.clone();
+                    self.buffer.clipboard_is_line = false;
+                    self.buffer.paste(&text);
+                    self.update_status();
+                    self.ensure_cursor_visible();
+                }
+            }
+
+            EditorMsg::PasteAfter(text) => {
+                if !text.is_empty() {
+                    self.buffer.clipboard = text.clone();
+                    self.buffer.clipboard_is_line = false;
+                    self.buffer.move_right(false);
+                    self.buffer.paste(&text);
+                    self.update_status();
+                    self.ensure_cursor_visible();
+                }
+            }
+
+            EditorMsg::VisualPaste(yank) => {
+                if !self.buffer.selection.is_caret() {
+                    let (s, e) = self.buffer.selection.ordered();
+                    let is_line = self.vim_mode == VimMode::VisualLine;
+                    let lcount = e.line - s.line + 1;
+                    let replaced = if is_line {
+                        let t = self.buffer.yank_lines(s.line, lcount);
+                        self.buffer.delete_lines(s.line, lcount);
+                        t
+                    } else {
+                        self.buffer.cut()
+                    };
+                    if !yank.is_empty() {
+                        self.buffer.paste(&yank);
+                    }
+                    self.buffer.clipboard = yank;
+                    self.buffer.clipboard_is_line = false;
+                    self.vim_mode = VimMode::Normal;
+                    self.update_status();
+                    self.ensure_cursor_visible();
+                    if !replaced.is_empty() {
+                        return iced::clipboard::write(replaced);
+                    }
+                }
+            }
+
             EditorMsg::Key(key, mods, text) => {
                 // Ctrl+\ toggles vim on/off from any mode
                 if mods.command() {
@@ -391,13 +444,14 @@ impl CodeEditor {
                                     }
                                 }
                                 "x" => {
-                                    let _ = self.buffer.cut();
+                                    let cut = self.buffer.cut();
+                                    if !cut.is_empty() {
+                                        return iced::clipboard::write(cut);
+                                    }
                                 }
                                 "v" => {
-                                    let clip = self.buffer.clipboard.clone();
-                                    if !clip.is_empty() {
-                                        self.buffer.paste(&clip);
-                                    }
+                                    return iced::clipboard::read()
+                                        .map(|t| EditorMsg::Paste(t.unwrap_or_default()));
                                 }
                                 _ => {}
                             }

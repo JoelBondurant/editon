@@ -295,33 +295,12 @@ impl CodeEditor {
                             return self.exec_operator_motion('c', "$", 1);
                         }
                         "p" => {
-                            if self.buffer.clipboard_is_line {
-                                for _ in 0..count {
-                                    self.buffer.paste_line_below();
-                                }
-                            } else {
-                                let clip = self.buffer.clipboard.clone();
-                                if !clip.is_empty() {
-                                    self.buffer.move_right(false);
-                                    for _ in 0..count {
-                                        self.buffer.paste(&clip);
-                                    }
-                                }
-                            }
+                            return iced::clipboard::read()
+                                .map(|t| EditorMsg::PasteAfter(t.unwrap_or_default()));
                         }
                         "P" => {
-                            if self.buffer.clipboard_is_line {
-                                for _ in 0..count {
-                                    self.buffer.paste_line_above();
-                                }
-                            } else {
-                                let clip = self.buffer.clipboard.clone();
-                                if !clip.is_empty() {
-                                    for _ in 0..count {
-                                        self.buffer.paste(&clip);
-                                    }
-                                }
-                            }
+                            return iced::clipboard::read()
+                                .map(|t| EditorMsg::Paste(t.unwrap_or_default()));
                         }
                         "~" => {
                             for _ in 0..count {
@@ -721,34 +700,10 @@ impl CodeEditor {
                             self.ensure_cursor_visible();
                             return Task::none();
                         }
-                        // ── visual paste: replace selection with yank ────
+                        // ── visual paste: replace selection with system clipboard ──
                         "p" => {
-                            // Preserve the yanked text before cut overwrites it
-                            let yank = self.buffer.clipboard.clone();
-                            let yank_is_line = self.buffer.clipboard_is_line;
-                            let replaced = if is_line {
-                                let (s, e) = self.buffer.selection.ordered();
-                                let lcount = e.line - s.line + 1;
-                                let t = self.buffer.yank_lines(s.line, lcount);
-                                self.buffer.delete_lines(s.line, lcount);
-                                t
-                            } else {
-                                self.buffer.cut()
-                            };
-                            // Paste the yanked text at the cursor
-                            if !yank.is_empty() {
-                                self.buffer.paste(&yank);
-                            }
-                            // Keep the yank available for repeated `p`
-                            self.buffer.clipboard = yank;
-                            self.buffer.clipboard_is_line = yank_is_line;
-                            self.vim_mode = VimMode::Normal;
-                            self.update_status();
-                            self.ensure_cursor_visible();
-                            if !replaced.is_empty() {
-                                return iced::clipboard::write(replaced);
-                            }
-                            return Task::none();
+                            return iced::clipboard::read()
+                                .map(|t| EditorMsg::VisualPaste(t.unwrap_or_default()));
                         }
                         // ── text objects in visual mode ──────────────────
                         "i" | "a" => {
