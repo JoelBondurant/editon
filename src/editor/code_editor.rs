@@ -7,7 +7,7 @@ use super::buffer::{Buffer, CursorPos, Selection, UndoConfig};
 use super::highlight::SyntaxLanguage;
 use super::theme::EditorTheme;
 use super::widget::{EditorAction, SqlEditor};
-use super::vim::VimMode;
+use super::vim::{NormalEdit, VimMode};
 
 // ─── Public message type ──────────────────────────────────────────────────────
 
@@ -42,6 +42,22 @@ pub struct CodeEditor {
     pub(in crate::editor) pending_op: Option<char>,
     /// Pending block insert: (insert_col, top_line, bottom_line)
     pub(in crate::editor) block_insert: Option<(usize, usize, usize)>,
+    /// Pending f/F/t/T: stores which variant is waiting for the target char
+    pub(in crate::editor) pending_find: Option<char>,
+    /// Last f/F/t/T find, for ; and , repeat
+    pub(in crate::editor) last_find: Option<(char, char)>,
+    /// Pending z-prefix (zz/zt/zb)
+    pub(in crate::editor) pending_z: bool,
+    /// Pending i/a text-object prefix inside an operator motion
+    pub(in crate::editor) pending_obj_prefix: Option<char>,
+    /// Last repeatable normal-mode edit (for `.`)
+    pub(in crate::editor) last_edit: Option<NormalEdit>,
+    /// Text inserted during the last Insert session (for dot-repeat of change ops)
+    pub(in crate::editor) last_insert_text: String,
+    /// Cursor col when Insert mode was entered (for last_insert_text capture)
+    pub(in crate::editor) insert_enter_col: usize,
+    /// Cursor line when Insert mode was entered
+    pub(in crate::editor) insert_enter_line: usize,
 
     is_dragging: bool,
     click_count: u32,
@@ -72,6 +88,14 @@ impl CodeEditor {
             vim_count: String::new(),
             pending_op: None,
             block_insert: None,
+            pending_find: None,
+            last_find: None,
+            pending_z: false,
+            pending_obj_prefix: None,
+            last_edit: None,
+            last_insert_text: String::new(),
+            insert_enter_col: 0,
+            insert_enter_line: 0,
         };
         ed.status = format!("NOR | Ln 1, Col 1 | {} diag", dc);
         ed
@@ -197,6 +221,14 @@ impl CodeEditor {
                 {
                     let col_before = self.buffer.selection.head.col;
                     let line_before = self.buffer.selection.head.line;
+                    // Capture inserted text for dot-repeat
+                    if line_before == self.insert_enter_line && col_before > self.insert_enter_col {
+                        self.last_insert_text = self.buffer.line_text(line_before)
+                            .chars()
+                            .skip(self.insert_enter_col)
+                            .take(col_before - self.insert_enter_col)
+                            .collect();
+                    }
                     self.vim_mode = VimMode::Normal;
                     if col_before > 0 {
                         self.buffer.move_left(false);
@@ -551,6 +583,75 @@ impl CodeEditor {
             search,
             dc,
         );
+    }
+
+    /// Record cursor position and enter Insert mode (for dot-repeat tracking).
+    pub(in crate::editor) fn enter_insert_mode(&mut self) {
+        self.insert_enter_col = self.buffer.selection.head.col;
+        self.insert_enter_line = self.buffer.selection.head.line;
+        self.vim_mode = VimMode::Insert;
+    }
+
+    /// Find char `target` in the f/F/t/T `kind` direction on current line.
+    /// `extend` keeps selection anchor (visual / operator motion).
+    pub(in crate::editor) fn do_find(&mut self, kind: char, target: char, count: usize, extend: bool) {
+        let forward = matches!(kind, 'f' | 't');
+        let before_target = matches!(kind, 't' | 'T');
+
+        let line = self.buffer.selection.head.line;
+        let col  = self.buffer.selection.head.col;
+        let lt   = self.buffer.line_text(line);
+        let chars: Vec<char> = lt.chars().collect();
+
+        let dest = if forward {
+            let mut found = 0usize;
+            let mut result = None;
+            for i in (col + 1)..chars.len() {
+                if chars[i] == target {
+                    found += 1;
+                    if found >= count {
+                        result = Some(if before_target { i.saturating_sub(1) } else { i });
+                        break;
+                    }
+                }
+            }
+            result
+        } else {
+            let mut found = 0usize;
+            let mut result = None;
+            for i in (0..col).rev() {
+                if chars[i] == target {
+                    found += 1;
+                    if found >= count {
+                        result = Some(if before_target { i + 1 } else { i });
+                        break;
+                    }
+                }
+            }
+            result
+        };
+
+        if let Some(d) = dest {
+            let pos = CursorPos::new(line, d);
+            if extend {
+                self.buffer.selection.head = pos;
+            } else {
+                self.buffer.selection = Selection::caret(pos);
+            }
+        }
+    }
+
+    /// Scroll so the cursor is centered (`z`), at top (`t`), or bottom (`b`).
+    pub(in crate::editor) fn scroll_cursor_z(&mut self, mode: char) {
+        let line = self.buffer.selection.head.line;
+        let cy = line as f32 * widget::line_height();
+        let lh = widget::line_height();
+        self.scroll_y = match mode {
+            'z' => (cy - self.viewport_h / 2.0 + lh / 2.0).max(0.0),
+            't' => cy,
+            'b' => (cy - self.viewport_h + lh).max(0.0),
+            _ => self.scroll_y,
+        };
     }
 
     pub(in crate::editor) fn ensure_cursor_visible(&mut self) {
