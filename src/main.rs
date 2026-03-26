@@ -157,6 +157,11 @@ impl DemoApp {
             self.editor.set_content_with_language(content, lang);
             return Task::none();
         }
+        // Intercept F6: toggle vim mode on/off (demo only)
+        if let EditorMsg::Key(Key::Named(keyboard::key::Named::F6), _, _) = &m {
+            self.editor.set_vim_enabled(!self.editor.vim_enabled());
+            return Task::none();
+        }
         self.editor.update(m).map(DemoMsg::Editor)
     }
 

@@ -69,7 +69,6 @@ impl CodeEditor {
     pub fn new(content: &str, language: SyntaxLanguage) -> Self {
         let undo_cfg = UndoConfig { max_history: 1000, group_timeout_ms: 600 };
         let buffer = Buffer::with_undo_config(content, language, undo_cfg);
-        let dc = buffer.diagnostics.len();
         let mut ed = Self {
             buffer,
             theme: EditorTheme::dark(),
@@ -97,7 +96,7 @@ impl CodeEditor {
             insert_enter_col: 0,
             insert_enter_line: 0,
         };
-        ed.status = format!("NOR | Ln 1, Col 1 | {} diag", dc);
+        ed.update_status();
         ed
     }
 
@@ -133,6 +132,18 @@ impl CodeEditor {
     pub fn set_language(&mut self, lang: SyntaxLanguage) {
         let content = self.content();
         self.set_content_with_language(&content, lang);
+    }
+
+    /// Enable or disable vim modal editing. When disabled the editor behaves
+    /// like a conventional text editor (always in "insert" mode).
+    pub fn set_vim_enabled(&mut self, enabled: bool) {
+        self.vim_mode = if enabled { VimMode::Normal } else { VimMode::Off };
+        self.update_status();
+    }
+
+    /// Returns `true` when vim modal editing is active.
+    pub fn vim_enabled(&self) -> bool {
+        self.vim_mode != VimMode::Off
     }
 
     /// Swap the active color theme.
@@ -202,21 +213,28 @@ impl CodeEditor {
             }
 
             EditorMsg::Key(key, mods, text) => {
-                if self.vim_mode == VimMode::Command {
-                    return self.handle_vim_command_key(key, text);
-                }
-                if self.vim_mode == VimMode::Normal {
-                    return self.handle_vim_normal_key(key, mods, text);
-                }
-                if self.vim_mode == VimMode::Visual || self.vim_mode == VimMode::VisualLine {
-                    return self.handle_vim_visual_key(key, mods, text);
-                }
-                if self.vim_mode == VimMode::VisualBlock {
-                    return self.handle_vim_visual_block_key(key, mods, text);
+                // Ctrl+\ toggles vim on/off from any mode
+                if mods.command() {
+                    if let Key::Character(ref ch) = key {
+                        if ch.as_str() == "\\" {
+                            self.set_vim_enabled(self.vim_mode == VimMode::Off);
+                            return Task::none();
+                        }
+                    }
                 }
 
-                // Insert mode: Escape → Normal
+                match self.vim_mode {
+                    VimMode::Command => return self.handle_vim_command_key(key, text),
+                    VimMode::Normal  => return self.handle_vim_normal_key(key, mods, text),
+                    VimMode::Visual | VimMode::VisualLine
+                                     => return self.handle_vim_visual_key(key, mods, text),
+                    VimMode::VisualBlock => return self.handle_vim_visual_block_key(key, mods, text),
+                    VimMode::Insert | VimMode::Off => {}
+                }
+
+                // Insert mode (vim enabled): Escape → Normal
                 if matches!(&key, Key::Named(keyboard::key::Named::Escape))
+                    && self.vim_mode == VimMode::Insert
                     && !self.buffer.search.is_open
                 {
                     let col_before = self.buffer.selection.head.col;
@@ -457,7 +475,7 @@ impl CodeEditor {
                 text("  ·  ").size(13).color(sep),
                 text(lang).size(13).color(sc),
                 text("  ·  ").size(13).color(sep),
-                text("C-l=ws  C-m=map  C-w=wrap").size(11).color(sep),
+                text("C-l=ws  C-m=map  C-\\=vim").size(11).color(sep),
             ]
             .padding(6)
             .spacing(4),
@@ -543,14 +561,6 @@ impl CodeEditor {
     }
 
     pub(in crate::editor) fn update_status(&mut self) {
-        let mode = match self.vim_mode {
-            VimMode::Normal => "NOR",
-            VimMode::Insert => "INS",
-            VimMode::Visual => "VIS",
-            VimMode::VisualLine => "V-LINE",
-            VimMode::VisualBlock => "V-BLOCK",
-            VimMode::Command => "CMD",
-        };
         let p = self.buffer.selection.head;
         let dc = self.buffer.diagnostics.len();
         let sel = if !self.buffer.selection.is_caret() {
@@ -574,15 +584,20 @@ impl CodeEditor {
         } else {
             String::new()
         };
-        self.status = format!(
-            "{} | Ln {}, Col {}{}{} | {} diag",
-            mode,
-            p.line + 1,
-            p.col + 1,
-            sel,
-            search,
-            dc,
-        );
+        let mode = match self.vim_mode {
+            VimMode::Off         => Some("OFF"),
+            VimMode::Normal      => Some("NOR"),
+            VimMode::Insert      => Some("INS"),
+            VimMode::Visual      => Some("VIS"),
+            VimMode::VisualLine  => Some("V-LINE"),
+            VimMode::VisualBlock => Some("V-BLOCK"),
+            VimMode::Command     => Some("CMD"),
+        };
+        self.status = if let Some(m) = mode {
+            format!("{} | Ln {}, Col {}{}{} | {} diag", m, p.line + 1, p.col + 1, sel, search, dc)
+        } else {
+            format!("Ln {}, Col {}{}{} | {} diag", p.line + 1, p.col + 1, sel, search, dc)
+        };
     }
 
     /// Record cursor position and enter Insert mode (for dot-repeat tracking).

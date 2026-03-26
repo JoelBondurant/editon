@@ -9,6 +9,7 @@ use super::code_editor::{CodeEditor, EditorMsg};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VimMode {
+    Off,
     Normal,
     Insert,
     Visual,
