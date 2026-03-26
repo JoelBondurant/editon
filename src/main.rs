@@ -7,6 +7,8 @@ use editon::highlight::SyntaxLanguage;
 use editon::theme::EditorTheme;
 use editon::widget::{self, EditorAction, SqlEditor};
 
+const DEJAVU_SANS_MONO: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
+
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
         .title("Code Editor")
@@ -14,6 +16,7 @@ fn main() -> iced::Result {
         .theme(|_: &App| Theme::Dark)
         .window_size((1200.0, 800.0))
         .antialiasing(true)
+        .font(DEJAVU_SANS_MONO)
         .run()
 }
 
@@ -185,6 +188,7 @@ struct App {
     is_dragging: bool,
     click_count: u32,
     show_minimap: bool,
+    show_whitespace: bool,
     vim_mode: VimMode,
     vim_command: String,
     pending_g: bool,
@@ -220,6 +224,7 @@ impl App {
             is_dragging: false,
             click_count: 0,
             show_minimap: true,
+            show_whitespace: true,
             vim_mode: VimMode::Normal,
             vim_command: String::new(),
             pending_g: false,
@@ -374,6 +379,11 @@ impl App {
                         self.show_minimap = !self.show_minimap;
                     }
 
+                    // ── Whitespace visibility toggle ──────────────────
+                    Key::Character(ref ch) if ctrl && ch.as_str() == "l" => {
+                        self.show_whitespace = !self.show_whitespace;
+                    }
+
                     // ── Navigation ────────────────────────────────────
                     Key::Named(keyboard::key::Named::ArrowLeft) if ctrl => self.buffer.move_word_left(shift),
                     Key::Named(keyboard::key::Named::ArrowRight) if ctrl => self.buffer.move_word_right(shift),
@@ -400,8 +410,14 @@ impl App {
                     Key::Named(keyboard::key::Named::Backspace) => self.buffer.backspace(),
                     Key::Named(keyboard::key::Named::Delete) => self.buffer.delete(),
                     Key::Named(keyboard::key::Named::Enter) => self.buffer.insert_newline(),
-                    Key::Named(keyboard::key::Named::Tab) if shift => { /* dedent TODO */ }
-                    Key::Named(keyboard::key::Named::Tab) => self.buffer.insert_str("    "),
+                    Key::Named(keyboard::key::Named::Tab) if shift => self.buffer.dedent_lines(),
+                    Key::Named(keyboard::key::Named::Tab) => {
+                        if self.buffer.selection.is_caret() {
+                            self.buffer.insert_char('\t');
+                        } else {
+                            self.buffer.indent_lines();
+                        }
+                    }
 
                     Key::Character(ref ch) => {
                         let s = ch.as_str();
@@ -434,6 +450,10 @@ impl App {
                             }
                         }
                     }
+                    // Space is Key::Named in iced, not Key::Character
+                    Key::Named(keyboard::key::Named::Space) if !mods.command() => {
+                        self.buffer.insert_char_auto_pair(' ');
+                    }
                     _ => {}
                 }
                 self.update_status();
@@ -457,6 +477,7 @@ impl App {
             .scroll_y(self.scroll_y)
             .scroll_x(self.scroll_x)
             .show_minimap(self.show_minimap)
+            .show_whitespace(self.show_whitespace)
             .block_cursor(self.vim_mode == VimMode::Normal);
 
         let sc = iced::Color::from_rgb(0.55, 0.58, 0.62);
@@ -474,7 +495,7 @@ impl App {
                 text("  ·  ").size(13).color(sep),
                 text(lang).size(13).color(sc),
                 text("  ·  ").size(13).color(sep),
-                text("F5=switch lang").size(11).color(sep),
+                text("F5=lang  C-l=ws").size(11).color(sep),
             ]
             .padding(6).spacing(4),
         )
@@ -553,7 +574,10 @@ impl App {
         else if cy + widget::line_height() > self.scroll_y + vh {
             self.scroll_y = cy + widget::line_height() - vh;
         }
-        let cx = self.buffer.selection.head.col as f32 * 9.6;
+        let head = self.buffer.selection.head;
+        let hlt = self.buffer.line_text(head.line);
+        let vcol = editon::buffer::visual_col_of(&hlt, head.col);
+        let cx = vcol as f32 * widget::CHAR_W;
         let gw = widget::gutter_width(self.buffer.line_count());
         let mm = if self.show_minimap { widget::minimap_width() } else { 0.0 };
         let vw = 1200.0 - gw - widget::scrollbar_width() - mm;
@@ -621,6 +645,7 @@ impl App {
                         "f" | "F" => self.buffer.search_open(),
                         "w" | "W" => { let e = !self.buffer.wrap_config.enabled; self.buffer.set_wrap(e); }
                         "m" | "M" => self.show_minimap = !self.show_minimap,
+                        "l" | "L" => self.show_whitespace = !self.show_whitespace,
                         "r" | "R" => self.buffer.redo(),
                         _ => {}
                     }

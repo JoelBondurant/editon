@@ -4,6 +4,40 @@ use crate::highlight::{Highlighter, SyntaxLanguage, SyntaxToken, TokenKind};
 use crate::search::SearchState;
 use crate::wrap::{self, VisualLine, WrapConfig};
 
+// ─── Tab-aware column helpers ─────────────────────────────────────────────────
+
+pub const TAB_WIDTH: usize = 4;
+
+/// Logical col → visual col. Tabs expand to the next TAB_WIDTH boundary.
+pub fn visual_col_of(line: &str, logical_col: usize) -> usize {
+    let mut vcol = 0usize;
+    for (i, ch) in line.chars().enumerate() {
+        if i >= logical_col { break; }
+        if ch == '\t' {
+            vcol = (vcol / TAB_WIDTH + 1) * TAB_WIDTH;
+        } else {
+            vcol += 1;
+        }
+    }
+    vcol
+}
+
+/// Visual col → logical col. Snaps to the nearest character boundary.
+pub fn logical_col_of(line: &str, target_vcol: usize) -> usize {
+    let mut vcol = 0usize;
+    for (i, ch) in line.chars().enumerate() {
+        if vcol >= target_vcol { return i; }
+        if ch == '\t' {
+            let next = (vcol / TAB_WIDTH + 1) * TAB_WIDTH;
+            if target_vcol < next { return i; }
+            vcol = next;
+        } else {
+            vcol += 1;
+        }
+    }
+    line.chars().count()
+}
+
 // ─── Diagnostic ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -480,6 +514,62 @@ impl Buffer {
         let last = (line + count - 1).min(self.line_count().saturating_sub(1));
         self.selection.anchor = CursorPos::new(line, 0);
         self.selection.head = CursorPos::new(last, self.line_len(last));
+    }
+
+    // ── Indent / Dedent ───────────────────────────────────────────────────
+
+    /// Indent selected lines (or current line) by one tab character.
+    pub fn indent_lines(&mut self) {
+        let (first, last) = if self.selection.is_caret() {
+            let l = self.selection.head.line;
+            (l, l)
+        } else {
+            let (s, e) = self.selection.ordered();
+            (s.line, e.line)
+        };
+        self.save_undo(EditKind::Insert);
+        for line in (first..=last).rev() {
+            let ci = self.rope.line_to_char(line);
+            self.rope.insert(ci, "\t");
+        }
+        let shift = |p: CursorPos| CursorPos::new(p.line, p.col + 1);
+        self.selection.anchor = shift(self.selection.anchor);
+        self.selection.head   = shift(self.selection.head);
+        self.post_edit();
+    }
+
+    /// Dedent selected lines (or current line) by one tab stop.
+    /// Removes a leading tab first; if none, removes up to 4 leading spaces.
+    pub fn dedent_lines(&mut self) {
+        let (first, last) = if self.selection.is_caret() {
+            let l = self.selection.head.line;
+            (l, l)
+        } else {
+            let (s, e) = self.selection.ordered();
+            (s.line, e.line)
+        };
+        self.save_undo(EditKind::Delete);
+        let mut removed = vec![0usize; last - first + 1];
+        for (i, line) in (first..=last).rev().enumerate() {
+            let text = self.line_text(line);
+            let ci = self.rope.line_to_char(line);
+            let n = if text.starts_with('\t') {
+                self.rope.remove(ci..ci + 1);
+                1
+            } else {
+                let spaces = text.chars().take_while(|c| *c == ' ').count().min(4);
+                if spaces > 0 { self.rope.remove(ci..ci + spaces); }
+                spaces
+            };
+            removed[last - first - i] = n;
+        }
+        let clamp = |p: CursorPos| {
+            let rm = removed.get(p.line.saturating_sub(first)).copied().unwrap_or(0);
+            CursorPos::new(p.line, p.col.saturating_sub(rm))
+        };
+        self.selection.anchor = clamp(self.selection.anchor);
+        self.selection.head   = clamp(self.selection.head);
+        self.post_edit();
     }
 
     // ── Editing ───────────────────────────────────────────────────────────
@@ -1127,11 +1217,21 @@ impl Buffer {
 
     // ── Indent guides ─────────────────────────────────────────────────────
 
+    /// Returns visual column positions of indent guides for this line.
     pub fn indent_guides(&self, line: usize) -> Vec<usize> {
-        let spaces = self.line_text(line).chars().take_while(|c| *c == ' ').count();
+        let text = self.line_text(line);
+        // Count leading whitespace in visual columns (tabs = TAB_WIDTH, spaces = 1).
+        let mut vcol = 0usize;
+        for ch in text.chars() {
+            match ch {
+                '\t' => vcol = (vcol / TAB_WIDTH + 1) * TAB_WIDTH,
+                ' '  => vcol += 1,
+                _    => break,
+            }
+        }
         let mut g = Vec::new();
-        let mut c = 4;
-        while c <= spaces { g.push(c); c += 4; }
+        let mut c = TAB_WIDTH;
+        while c <= vcol { g.push(c); c += TAB_WIDTH; }
         g
     }
 }

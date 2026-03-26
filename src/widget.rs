@@ -7,13 +7,20 @@ use iced::keyboard;
 use iced::mouse;
 use iced::{Color, Element, Event, Length, Pixels, Point, Rectangle, Renderer, Size, Theme};
 
-use crate::buffer::{Buffer, CursorPos};
+use crate::buffer::{self, Buffer, CursorPos, TAB_WIDTH};
 use crate::highlight::TokenKind;
 use crate::theme::EditorTheme;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const CHAR_W: f32 = 9.6;
+pub const CHAR_W: f32 = 9.6;
+
+pub const EDITOR_FONT: iced::Font = iced::Font {
+    family: iced::font::Family::Name("DejaVu Sans Mono"),
+    weight: iced::font::Weight::Normal,
+    stretch: iced::font::Stretch::Normal,
+    style: iced::font::Style::Normal,
+};
 const LINE_H: f32 = 22.0;
 const GUTTER_PAD: f32 = 16.0;
 const FOLD_COL_W: f32 = 16.0; // fold indicator column width
@@ -49,6 +56,7 @@ pub struct SqlEditor<'a, Message> {
     scroll_x: f32,
     show_minimap: bool,
     block_cursor: bool,
+    show_whitespace: bool,
 }
 
 impl<'a, Message> SqlEditor<'a, Message> {
@@ -63,6 +71,7 @@ impl<'a, Message> SqlEditor<'a, Message> {
             scroll_y: 0.0, scroll_x: 0.0,
             show_minimap: true,
             block_cursor: false,
+            show_whitespace: true,
         }
     }
 
@@ -70,6 +79,7 @@ impl<'a, Message> SqlEditor<'a, Message> {
     pub fn scroll_x(mut self, v: f32) -> Self { self.scroll_x = v; self }
     pub fn show_minimap(mut self, v: bool) -> Self { self.show_minimap = v; self }
     pub fn block_cursor(mut self, v: bool) -> Self { self.block_cursor = v; self }
+    pub fn show_whitespace(mut self, v: bool) -> Self { self.show_whitespace = v; self }
 
     fn gutter_w(&self) -> f32 {
         let d = format!("{}", self.buffer.line_count()).len().max(3) as f32;
@@ -83,9 +93,12 @@ impl<'a, Message> SqlEditor<'a, Message> {
     fn pixel_to_pos(&self, bounds: &Rectangle, px: f32, py: f32) -> CursorPos {
         let rx = px - bounds.x - self.text_x() + self.scroll_x;
         let ry = py - bounds.y - TOP_PAD + self.scroll_y;
-        let line = (ry / LINE_H).floor().max(0.0) as usize;
-        let col = (rx / CHAR_W).round().max(0.0) as usize;
-        self.buffer.click_to_pos(line, col)
+        let line = ((ry / LINE_H).floor().max(0.0) as usize)
+            .min(self.buffer.line_count().saturating_sub(1));
+        let vcol = (rx / CHAR_W).round().max(0.0) as usize;
+        let lt = self.buffer.line_text(line);
+        let logical = buffer::logical_col_of(&lt, vcol);
+        self.buffer.click_to_pos(line, logical)
     }
 }
 
@@ -156,9 +169,10 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     fill(renderer,Rectangle { x: b.x + gw, y, width: b.width - gw - SCROLL_W - if self.show_minimap { MINIMAP_W } else { 0.0 }, height: LINE_H }, th.current_line_bg);
                 }
 
-                // Indent guides
-                for &col in &self.buffer.indent_guides(li) {
-                    let gx = b.x + tx + (col as f32 * CHAR_W) - CHAR_W * 4.0 - self.scroll_x;
+                // Indent guides (visual cols returned by indent_guides)
+                for &vcol in &self.buffer.indent_guides(li) {
+                    // Guide at start of this indent level = vcol - TAB_WIDTH
+                    let gx = b.x + tx + ((vcol.saturating_sub(TAB_WIDTH)) as f32 * CHAR_W) - self.scroll_x;
                     let c = if li == active { th.indent_guide_active } else { th.indent_guide };
                     fill(renderer,Rectangle { x: gx, y, width: INDENT_W, height: LINE_H }, c);
                 }
@@ -190,10 +204,13 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
 
                 // Search match highlights
                 if self.buffer.search.is_open {
+                    let slt = self.buffer.line_text(li);
                     for (i, m) in self.buffer.search.matches.iter().enumerate() {
                         if m.line == li {
-                            let mx = b.x + tx + (m.col_start as f32 * CHAR_W) - self.scroll_x;
-                            let mw = ((m.col_end - m.col_start) as f32 * CHAR_W).max(CHAR_W);
+                            let mvs = buffer::visual_col_of(&slt, m.col_start);
+                            let mve = buffer::visual_col_of(&slt, m.col_end);
+                            let mx = b.x + tx + (mvs as f32 * CHAR_W) - self.scroll_x;
+                            let mw = ((mve - mvs) as f32 * CHAR_W).max(CHAR_W);
                             let c = if i == self.buffer.search.current_match { th.search_current_bg } else { th.search_match_bg };
                             fill(renderer,Rectangle { x: mx, y, width: mw, height: LINE_H }, c);
                         }
@@ -204,11 +221,16 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                 if !self.buffer.selection.is_caret() {
                     let (ss, se) = self.buffer.selection.ordered();
                     if li >= ss.line && li <= se.line {
-                        let ll = self.buffer.line_len(li);
-                        let cs = if li == ss.line { ss.col } else { 0 };
-                        let ce = if li == se.line { se.col } else { ll + 1 };
-                        let sx = b.x + tx + (cs as f32 * CHAR_W) - self.scroll_x;
-                        let sw = ((ce - cs) as f32 * CHAR_W).max(CHAR_W * 0.5);
+                        let lt_sel = self.buffer.line_text(li);
+                        let vcs = buffer::visual_col_of(&lt_sel, if li == ss.line { ss.col } else { 0 });
+                        let vce = if li == se.line {
+                            buffer::visual_col_of(&lt_sel, se.col)
+                        } else {
+                            // Extend to end of line + 1 to show selection on blank lines too
+                            buffer::visual_col_of(&lt_sel, lt_sel.chars().count()) + 1
+                        };
+                        let sx = b.x + tx + (vcs as f32 * CHAR_W) - self.scroll_x;
+                        let sw = ((vce - vcs) as f32 * CHAR_W).max(CHAR_W * 0.5);
                         fill(renderer,Rectangle { x: sx, y, width: sw, height: LINE_H }, th.selection);
                     }
                 }
@@ -217,7 +239,9 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                 if let Some(ref bm) = self.buffer.matched_bracket {
                     for &(bl, bc) in &[(bm.open_line, bm.open_col), (bm.close_line, bm.close_col)] {
                         if bl == li {
-                            let bx = b.x + tx + (bc as f32 * CHAR_W) - self.scroll_x;
+                            let blt = self.buffer.line_text(bl);
+                            let bvcol = buffer::visual_col_of(&blt, bc);
+                            let bx = b.x + tx + (bvcol as f32 * CHAR_W) - self.scroll_x;
                             fill(renderer,Rectangle { x: bx, y, width: CHAR_W, height: LINE_H }, th.bracket_match_bg);
                             for rect in [
                                 Rectangle { x: bx, y, width: CHAR_W, height: BRACKET_BW },
@@ -229,7 +253,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     }
                 }
 
-                // Syntax tokens
+                // Syntax tokens (tab-aware rendering + whitespace glyphs)
                 let lt = self.buffer.line_text(li);
                 let lbs = self.buffer.rope.line_to_byte(li);
                 let lbe = lbs + lt.len();
@@ -250,12 +274,70 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                 }
                 if cur < lt.len() { render.push((cur, lt.len(), TokenKind::Plain)); }
 
+                // Whitespace indicator color: dimmed version of gutter text
+                let ws_color = Color { a: 0.35, ..th.gutter_text };
+
+                // Trailing whitespace start (for ~ indicators)
+                let trail_start = lt.trim_end().len(); // byte offset where trailing whitespace begins
+
                 for &(start, end, kind) in &render {
                     if start >= lt.len() { break; }
                     let sl = &lt[start..end.min(lt.len())];
                     if sl.is_empty() { continue; }
-                    let px = b.x + tx + (start as f32 * CHAR_W) - self.scroll_x;
-                    draw_text(renderer,sl, px, y, token_color(&kind, th), b.width);
+                    let color = token_color(&kind, th);
+
+                    // Walk char-by-char to expand tabs and draw whitespace glyphs
+                    let mut vcol = buffer::visual_col_of(&lt, start);
+                    let mut seg = String::new();
+                    let mut seg_vcol = vcol;
+                    let mut byte_pos = start;
+
+                    for ch in sl.chars() {
+                        if ch == '\t' {
+                            // Flush any accumulated text segment
+                            if !seg.is_empty() {
+                                let px = b.x + tx + (seg_vcol as f32 * CHAR_W) - self.scroll_x;
+                                draw_text(renderer, &seg, px, y, color, b.width);
+                                seg.clear();
+                            }
+                            // Draw tab glyph at tab position
+                            if self.show_whitespace {
+                                let px = b.x + tx + (vcol as f32 * CHAR_W) - self.scroll_x;
+                                draw_text(renderer, "▸", px, y, ws_color, CHAR_W);
+                            }
+                            // Advance to next tabstop
+                            vcol = (vcol / TAB_WIDTH + 1) * TAB_WIDTH;
+                            seg_vcol = vcol;
+                        } else if self.show_whitespace && ch == ' ' {
+                            // Flush accumulated text before drawing whitespace glyph
+                            if !seg.is_empty() {
+                                let px = b.x + tx + (seg_vcol as f32 * CHAR_W) - self.scroll_x;
+                                draw_text(renderer, &seg, px, y, color, b.width);
+                                seg.clear();
+                            }
+                            let glyph = if byte_pos >= trail_start { "~" } else { "␣" };
+                            let px = b.x + tx + (vcol as f32 * CHAR_W) - self.scroll_x;
+                            draw_text(renderer, glyph, px, y, ws_color, CHAR_W);
+                            vcol += 1;
+                            seg_vcol = vcol;
+                        } else {
+                            seg.push(ch);
+                            vcol += 1;
+                        }
+                        byte_pos += ch.len_utf8();
+                    }
+                    // Flush remaining segment
+                    if !seg.is_empty() {
+                        let px = b.x + tx + (seg_vcol as f32 * CHAR_W) - self.scroll_x;
+                        draw_text(renderer, &seg, px, y, color, b.width);
+                    }
+                }
+
+                // EOL marker ¬
+                if self.show_whitespace {
+                    let eol_vcol = buffer::visual_col_of(&lt, lt.chars().count());
+                    let px = b.x + tx + (eol_vcol as f32 * CHAR_W) - self.scroll_x;
+                    draw_text(renderer, "¬", px, y, Color { a: 0.18, ..th.gutter_text }, CHAR_W);
                 }
 
                 // Collapsed line count badge
@@ -263,16 +345,19 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                     let hc = self.buffer.folds.hidden_count(li);
                     if hc > 0 {
                         let badge = format!(" ⋯ {} lines", hc);
-                        let bx = b.x + tx + (lt.len() as f32 * CHAR_W) + 8.0 - self.scroll_x;
-                        draw_text(renderer,&badge, bx, y, th.comment, 200.0);
+                        let eol_vcol = buffer::visual_col_of(&lt, lt.chars().count());
+                        let bx = b.x + tx + (eol_vcol as f32 * CHAR_W) + 8.0 - self.scroll_x;
+                        draw_text(renderer, &badge, bx, y, th.comment, 200.0);
                     }
                 }
 
-                // Error squiggles
+                // Error squiggles (visual col positions)
                 for diag in &self.buffer.diagnostics {
                     if diag.line == li {
-                        let ux = b.x + tx + (diag.col_start as f32 * CHAR_W) - self.scroll_x;
-                        let uw = ((diag.col_end - diag.col_start) as f32 * CHAR_W).max(CHAR_W);
+                        let uvs = buffer::visual_col_of(&lt, diag.col_start);
+                        let uve = buffer::visual_col_of(&lt, diag.col_end);
+                        let ux = b.x + tx + (uvs as f32 * CHAR_W) - self.scroll_x;
+                        let uw = ((uve - uvs) as f32 * CHAR_W).max(CHAR_W);
                         let uy = y + LINE_H - ERR_THICK - 1.0;
                         let seg: f32 = 4.0;
                         let mut sx = ux;
@@ -290,8 +375,10 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
             if st.is_focused {
                 let cl = self.buffer.selection.head.line;
                 let cc = self.buffer.selection.head.col;
+                let clt = self.buffer.line_text(cl);
+                let cvcol = buffer::visual_col_of(&clt, cc);
                 let cy = b.y + TOP_PAD + (cl as f32 * LINE_H) - self.scroll_y;
-                let cx = b.x + tx + (cc as f32 * CHAR_W) - self.scroll_x;
+                let cx = b.x + tx + (cvcol as f32 * CHAR_W) - self.scroll_x;
                 if cy > b.y - LINE_H && cy < b.y + editor_h {
                     if self.block_cursor {
                         // Normal mode: full-width semi-transparent block so the char shows through
@@ -499,7 +586,7 @@ fn draw_text(r: &mut Renderer, content: &str, x: f32, y: f32, color: Color, max_
             bounds: Size::new(max_w, FONT_SZ),
             size: Pixels(FONT_SZ),
             line_height: iced::advanced::text::LineHeight::Relative(1.0),
-            font: iced::Font::MONOSPACE,
+            font: EDITOR_FONT,
             align_x: iced::advanced::text::Alignment::Left,
             align_y: iced::alignment::Vertical::Top,
             shaping: iced::advanced::text::Shaping::Basic,
@@ -532,12 +619,16 @@ fn token_color(kind: &TokenKind, th: &EditorTheme) -> Color {
 // ─── Public helpers ───────────────────────────────────────────────────────────
 
 pub fn pixel_to_pos(
-    buffer: &Buffer, bounds: &Rectangle, gutter_w: f32,
+    buf: &Buffer, bounds: &Rectangle, gutter_w: f32,
     scroll_x: f32, scroll_y: f32, px: f32, py: f32,
 ) -> CursorPos {
     let rx = px - bounds.x - gutter_w - LEFT_PAD + scroll_x;
     let ry = py - bounds.y - TOP_PAD + scroll_y;
-    buffer.click_to_pos((ry / LINE_H).floor().max(0.0) as usize, (rx / CHAR_W).round().max(0.0) as usize)
+    let line = ((ry / LINE_H).floor().max(0.0) as usize).min(buf.line_count().saturating_sub(1));
+    let vcol = (rx / CHAR_W).round().max(0.0) as usize;
+    let lt = buf.line_text(line);
+    let logical = buffer::logical_col_of(&lt, vcol);
+    buf.click_to_pos(line, logical)
 }
 
 pub fn gutter_width(line_count: usize) -> f32 {
