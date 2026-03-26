@@ -48,6 +48,7 @@ pub struct SqlEditor<'a, Message> {
     scroll_y: f32,
     scroll_x: f32,
     show_minimap: bool,
+    block_cursor: bool,
 }
 
 impl<'a, Message> SqlEditor<'a, Message> {
@@ -61,12 +62,14 @@ impl<'a, Message> SqlEditor<'a, Message> {
             on_action: Box::new(on_action),
             scroll_y: 0.0, scroll_x: 0.0,
             show_minimap: true,
+            block_cursor: false,
         }
     }
 
     pub fn scroll_y(mut self, v: f32) -> Self { self.scroll_y = v; self }
     pub fn scroll_x(mut self, v: f32) -> Self { self.scroll_x = v; self }
     pub fn show_minimap(mut self, v: bool) -> Self { self.show_minimap = v; self }
+    pub fn block_cursor(mut self, v: bool) -> Self { self.block_cursor = v; self }
 
     fn gutter_w(&self) -> f32 {
         let d = format!("{}", self.buffer.line_count()).len().max(3) as f32;
@@ -290,7 +293,13 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
                 let cy = b.y + TOP_PAD + (cl as f32 * LINE_H) - self.scroll_y;
                 let cx = b.x + tx + (cc as f32 * CHAR_W) - self.scroll_x;
                 if cy > b.y - LINE_H && cy < b.y + editor_h {
-                    fill(renderer,Rectangle { x: cx, y: cy, width: CURSOR_W, height: LINE_H }, th.cursor);
+                    if self.block_cursor {
+                        // Normal mode: full-width semi-transparent block so the char shows through
+                        fill(renderer, Rectangle { x: cx, y: cy, width: CHAR_W, height: LINE_H },
+                             Color { a: 0.55, ..th.cursor });
+                    } else {
+                        fill(renderer, Rectangle { x: cx, y: cy, width: CURSOR_W, height: LINE_H }, th.cursor);
+                    }
                 }
             }
 

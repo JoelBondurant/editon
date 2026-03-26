@@ -172,6 +172,9 @@ fn main() {
 }
 "#;
 
+#[derive(Debug, Clone, PartialEq)]
+enum VimMode { Normal, Insert, Command }
+
 struct App {
     buffer: Buffer,
     theme: EditorTheme,
@@ -182,6 +185,9 @@ struct App {
     is_dragging: bool,
     click_count: u32,
     show_minimap: bool,
+    vim_mode: VimMode,
+    vim_command: String,
+    pending_g: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -205,11 +211,14 @@ impl App {
             buffer,
             theme: EditorTheme::dark(),
             scroll_y: 0.0, scroll_x: 0.0,
-            status: format!("Ln 1, Col 1 | {} diagnostics | SQL", dc),
+            status: format!("NOR | Ln 1, Col 1 | {} diag", dc),
             bounds_h: 750.0,
             is_dragging: false,
             click_count: 0,
             show_minimap: true,
+            vim_mode: VimMode::Normal,
+            vim_command: String::new(),
+            pending_g: false,
         }, Task::none())
     }
 
@@ -257,6 +266,27 @@ impl App {
             Msg::MouseUp => { self.is_dragging = false; }
 
             Msg::Key(key, mods, text) => {
+                // ── Vim command bar captures all input ────────────────
+                if self.vim_mode == VimMode::Command {
+                    return self.handle_vim_command_key(key, text);
+                }
+                // ── Vim normal mode ───────────────────────────────────
+                if self.vim_mode == VimMode::Normal {
+                    return self.handle_vim_normal_key(key, mods, text);
+                }
+                // ── Insert mode: Escape → Normal ──────────────────────
+                if matches!(&key, Key::Named(keyboard::key::Named::Escape))
+                    && !self.buffer.search.is_open
+                {
+                    self.vim_mode = VimMode::Normal;
+                    // Vim convention: cursor steps back one on leaving insert mode
+                    if self.buffer.selection.head.col > 0 {
+                        self.buffer.move_left(false);
+                    }
+                    self.update_status();
+                    return Task::none();
+                }
+
                 let shift = mods.shift();
                 let ctrl = mods.command();
 
@@ -416,7 +446,8 @@ impl App {
         let editor = SqlEditor::new(&self.buffer, &self.theme, Msg::Action)
             .scroll_y(self.scroll_y)
             .scroll_x(self.scroll_x)
-            .show_minimap(self.show_minimap);
+            .show_minimap(self.show_minimap)
+            .block_cursor(self.vim_mode == VimMode::Normal);
 
         let sc = iced::Color::from_rgb(0.55, 0.58, 0.62);
         let sep = iced::Color::from_rgb(0.35, 0.37, 0.40);
@@ -443,10 +474,34 @@ impl App {
         })
         .width(Length::Fill);
 
-        column![
-            container(Element::from(editor)).width(Length::Fill).height(Length::Fill),
-            status_bar,
-        ].into()
+        let cmd_bar_color = iced::Color::from_rgb(0.90, 0.92, 0.95);
+        let cmd_bar = container(
+            row![
+                text(":").size(14).color(cmd_bar_color),
+                text(&self.vim_command).size(14).color(cmd_bar_color),
+                text("█").size(14).color(iced::Color::from_rgba(0.90, 0.92, 0.95, 0.7)),
+            ]
+            .padding(iced::Padding { top: 4.0, bottom: 4.0, left: 8.0, right: 8.0 })
+            .spacing(0),
+        )
+        .style(|_: &Theme| container::Style {
+            background: Some(iced::Background::Color(iced::Color::from_rgb(0.11, 0.12, 0.16))),
+            ..Default::default()
+        })
+        .width(Length::Fill);
+
+        if self.vim_mode == VimMode::Command {
+            column![
+                container(Element::from(editor)).width(Length::Fill).height(Length::Fill),
+                cmd_bar,
+                status_bar,
+            ].into()
+        } else {
+            column![
+                container(Element::from(editor)).width(Length::Fill).height(Length::Fill),
+                status_bar,
+            ].into()
+        }
     }
 
     fn pos_from_pixel(&self, pixel: iced::Point) -> CursorPos {
@@ -456,6 +511,11 @@ impl App {
     }
 
     fn update_status(&mut self) {
+        let mode = match self.vim_mode {
+            VimMode::Normal  => "NOR",
+            VimMode::Insert  => "INS",
+            VimMode::Command => "CMD",
+        };
         let p = self.buffer.selection.head;
         let dc = self.buffer.diagnostics.len();
         let sel = if !self.buffer.selection.is_caret() {
@@ -468,8 +528,8 @@ impl App {
             format!(" | Search: {}/{}", self.buffer.search.current_match + 1, self.buffer.search.match_count())
         } else { String::new() };
         self.status = format!(
-            "Ln {}, Col {}{}{} | {} diag",
-            p.line + 1, p.col + 1, sel, search, dc,
+            "{} | Ln {}, Col {}{}{} | {} diag",
+            mode, p.line + 1, p.col + 1, sel, search, dc,
         );
     }
 
@@ -487,6 +547,169 @@ impl App {
         let vw = 1200.0 - gw - widget::scrollbar_width() - mm;
         if cx < self.scroll_x { self.scroll_x = cx; }
         else if cx + 9.6 > self.scroll_x + vw { self.scroll_x = cx + 9.6 - vw; }
+    }
+
+    // ── Vim normal mode key handler ───────────────────────────────────────────
+
+    fn handle_vim_normal_key(&mut self, key: Key, mods: keyboard::Modifiers, text: Option<String>) -> Task<Msg> {
+        use keyboard::key::Named;
+        let shift = mods.shift();
+        let ctrl  = mods.command();
+        let was_g = self.pending_g;
+        self.pending_g = false;
+
+        match key {
+            // Named keys behave the same as in insert mode (arrows, page, F5, Escape)
+            Key::Named(Named::Escape) => {
+                if self.buffer.search.is_open { self.buffer.search_close(); }
+                self.buffer.selection.anchor = self.buffer.selection.head;
+            }
+            Key::Named(Named::ArrowLeft)  if ctrl => self.buffer.move_word_left(shift),
+            Key::Named(Named::ArrowRight) if ctrl => self.buffer.move_word_right(shift),
+            Key::Named(Named::ArrowLeft)           => self.buffer.move_left(shift),
+            Key::Named(Named::ArrowRight)          => self.buffer.move_right(shift),
+            Key::Named(Named::ArrowUp)             => self.buffer.move_up(shift),
+            Key::Named(Named::ArrowDown)           => self.buffer.move_down(shift),
+            Key::Named(Named::Home) if ctrl => self.buffer.move_to_start(shift),
+            Key::Named(Named::End)  if ctrl => self.buffer.move_to_end(shift),
+            Key::Named(Named::Home)         => self.buffer.move_home(shift),
+            Key::Named(Named::End)          => self.buffer.move_end(shift),
+            Key::Named(Named::PageUp) => {
+                let v = widget::visible_line_count(self.bounds_h);
+                self.buffer.page_up(v, false);
+            }
+            Key::Named(Named::PageDown) => {
+                let v = widget::visible_line_count(self.bounds_h);
+                self.buffer.page_down(v, false);
+            }
+            Key::Named(Named::F5) => {
+                let new_lang = match self.buffer.language() {
+                    SyntaxLanguage::Sql  => SyntaxLanguage::Rust,
+                    SyntaxLanguage::Rust => SyntaxLanguage::Sql,
+                };
+                let sample = match new_lang {
+                    SyntaxLanguage::Sql  => SAMPLE_SQL,
+                    SyntaxLanguage::Rust => SAMPLE_RUST,
+                };
+                self.buffer = Buffer::new(sample, new_lang);
+                self.scroll_y = 0.0;
+                self.scroll_x = 0.0;
+            }
+
+            Key::Character(_) => {
+                // Use the platform-resolved `text` so shift transforms
+                // like G, $, :, etc. match correctly.
+                let ch = text.as_deref().unwrap_or("");
+
+                if ctrl {
+                    // Ctrl shortcuts pass through unchanged in all modes
+                    match ch {
+                        "f" | "F" => self.buffer.search_open(),
+                        "w" | "W" => { let e = !self.buffer.wrap_config.enabled; self.buffer.set_wrap(e); }
+                        "m" | "M" => self.show_minimap = !self.show_minimap,
+                        "r" | "R" => self.buffer.redo(),
+                        _ => {}
+                    }
+                } else {
+                    match ch {
+                        // ─ Enter insert mode ───────────────────────────────
+                        "i" => self.vim_mode = VimMode::Insert,
+                        "I" => { self.buffer.move_home(false); self.vim_mode = VimMode::Insert; }
+                        "a" => { self.buffer.move_right(false); self.vim_mode = VimMode::Insert; }
+                        "A" => { self.buffer.move_end(false);  self.vim_mode = VimMode::Insert; }
+                        "o" => {
+                            self.buffer.move_end(false);
+                            self.buffer.insert_newline();
+                            self.vim_mode = VimMode::Insert;
+                        }
+                        "O" => {
+                            // Open line above: split at line start, then step onto the new blank line
+                            self.buffer.move_home(false);
+                            self.buffer.insert_newline();
+                            self.buffer.move_up(false);
+                            self.vim_mode = VimMode::Insert;
+                        }
+                        // ─ Enter command bar ───────────────────────────────
+                        ":" => self.vim_mode = VimMode::Command,
+                        // ─ Motions ─────────────────────────────────────────
+                        "h" => self.buffer.move_left(false),
+                        "j" => self.buffer.move_down(false),
+                        "k" => self.buffer.move_up(false),
+                        "l" => self.buffer.move_right(false),
+                        "w" => self.buffer.move_word_right(false),
+                        "b" => self.buffer.move_word_left(false),
+                        "e" => self.buffer.move_word_right(false),
+                        "0" => self.buffer.move_home(false),
+                        "$" => self.buffer.move_end(false),
+                        "^" => self.buffer.move_home(false),
+                        "g" if was_g => self.buffer.move_to_start(false),
+                        "g"          => self.pending_g = true,
+                        "G"          => self.buffer.move_to_end(false),
+                        // ─ Editing ─────────────────────────────────────────
+                        "x" => self.buffer.delete(),
+                        "X" => self.buffer.backspace(),
+                        "u" => self.buffer.undo(),
+                        // ─ Search navigation ───────────────────────────────
+                        "n" => { self.buffer.search_next(); }
+                        "N" => { self.buffer.search_prev(); }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        self.update_status();
+        self.ensure_cursor_visible();
+        Task::none()
+    }
+
+    // ── Vim command bar key handler ───────────────────────────────────────────
+
+    fn handle_vim_command_key(&mut self, key: Key, text: Option<String>) -> Task<Msg> {
+        use keyboard::key::Named;
+        match key {
+            Key::Named(Named::Escape) => {
+                self.vim_mode = VimMode::Normal;
+                self.vim_command.clear();
+            }
+            Key::Named(Named::Enter) => {
+                self.execute_vim_command();
+                self.vim_mode = VimMode::Normal;
+                self.vim_command.clear();
+            }
+            Key::Named(Named::Backspace) => {
+                if self.vim_command.pop().is_none() {
+                    self.vim_mode = VimMode::Normal;
+                }
+            }
+            Key::Character(_) => {
+                if let Some(t) = text { self.vim_command.push_str(&t); }
+            }
+            _ => {}
+        }
+        self.update_status();
+        Task::none()
+    }
+
+    // ── Vim command execution ─────────────────────────────────────────────────
+
+    fn execute_vim_command(&mut self) {
+        let cmd = self.vim_command.trim().to_string();
+        // :N  →  jump to line N (1-indexed, matches display)
+        if let Ok(n) = cmd.parse::<usize>() {
+            let line = n.saturating_sub(1).min(self.buffer.line_count().saturating_sub(1));
+            self.buffer.selection.anchor = CursorPos { line, col: 0 };
+            self.buffer.selection.head   = CursorPos { line, col: 0 };
+            self.ensure_cursor_visible();
+            return;
+        }
+        match cmd.as_str() {
+            "noh" | "nohl" | "nohlsearch" => self.buffer.search_close(),
+            "q" | "q!" | "wq"             => { /* TODO: quit when file I/O lands */ }
+            "w"                            => { /* TODO: save when file I/O lands */ }
+            _                              => {} // unknown — silently ignore
+        }
     }
 }
 
