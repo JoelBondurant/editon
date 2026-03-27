@@ -757,13 +757,9 @@ impl<'a, Message> SqlEditor<'a, Message> {
 		);
 		let total_h = self.buffer.line_count() as f32 * MINIMAP_LINE_H;
 		if total_h > 0.0 {
-			// Scroll ratio uses visual line count so the viewport indicator stays accurate.
-			let total_visual_h = (self.buffer.visual_lines.len() as f32 * LINE_H).max(1.0);
-			let vp_ratio = self.scroll_y / total_visual_h;
-			let vp_h = (editor_h / total_visual_h * editor_h)
-				.min(editor_h)
-				.max(20.0);
-			let vp_y = b.y + vp_ratio * (editor_h - vp_h);
+			let scale = MINIMAP_LINE_H / LINE_H;
+			let vp_h = (editor_h * scale).min(editor_h).max(20.0);
+			let vp_y = b.y + self.scroll_y * scale;
 			fill(
 				renderer,
 				Rectangle {
