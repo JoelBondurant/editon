@@ -1,64 +1,11 @@
+use super::coords::{document, line, CursorPos, Selection, TAB_WIDTH};
 use super::folding::FoldState;
 use super::highlight::{Highlighter, SyntaxLanguage, SyntaxToken, TokenKind};
 use super::search::SearchState;
+use super::undo::{EditKind, UndoConfig, UndoStack};
 use super::wrap::{self, VisualLine, WrapConfig};
 use regex::{Captures, RegexBuilder};
 use ropey::Rope;
-
-// ─── Tab-aware column helpers ─────────────────────────────────────────────────
-
-pub const TAB_WIDTH: usize = 4;
-
-/// Logical col → visual col. Tabs expand to the next TAB_WIDTH boundary.
-pub fn visual_col_of(line: &str, logical_col: usize) -> usize {
-	let mut vcol = 0usize;
-	for (i, ch) in line.chars().enumerate() {
-		if i >= logical_col {
-			break;
-		}
-		if ch == '\t' {
-			vcol = (vcol / TAB_WIDTH + 1) * TAB_WIDTH;
-		} else {
-			vcol += 1;
-		}
-	}
-	vcol
-}
-
-/// Visual col → logical col. Snaps to the nearest character boundary.
-pub fn logical_col_of(line: &str, target_vcol: usize) -> usize {
-	let mut vcol = 0usize;
-	for (i, ch) in line.chars().enumerate() {
-		if vcol >= target_vcol {
-			return i;
-		}
-		if ch == '\t' {
-			let next = (vcol / TAB_WIDTH + 1) * TAB_WIDTH;
-			if target_vcol < next {
-				return i;
-			}
-			vcol = next;
-		} else {
-			vcol += 1;
-		}
-	}
-	line.chars().count()
-}
-
-/// Iterate over the characters of a line together with each character's starting
-/// visual column. Tabs expand to the next `TAB_WIDTH` boundary.
-pub fn chars_with_vcols(line: &str) -> impl Iterator<Item = (char, usize)> + '_ {
-	let mut vcol = 0usize;
-	line.chars().map(move |ch| {
-		let start = vcol;
-		vcol = if ch == '\t' {
-			(vcol / TAB_WIDTH + 1) * TAB_WIDTH
-		} else {
-			vcol + 1
-		};
-		(ch, start)
-	})
-}
 
 // ─── Diagnostic ───────────────────────────────────────────────────────────────
 
@@ -68,6 +15,13 @@ pub struct Diagnostic {
 	pub col_start: usize,
 	pub col_end: usize,
 	pub message: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TokenSpan {
+	pub col_start: usize,
+	pub col_end: usize,
+	pub kind: TokenKind,
 }
 
 // ─── Bracket matching ─────────────────────────────────────────────────────────
@@ -80,179 +34,43 @@ pub struct BracketPair {
 	pub close_col: usize,
 }
 
-// ─── Cursor & Selection ───────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CursorPos {
-	pub line: usize,
-	pub col: usize,
+#[derive(Clone, Copy)]
+struct RefreshFlags {
+	parse: bool,
+	diagnostics: bool,
+	brackets: bool,
+	folds: bool,
+	visual_lines: bool,
+	search: bool,
 }
 
-impl CursorPos {
-	pub fn new(line: usize, col: usize) -> Self {
-		Self { line, col }
-	}
-	pub fn zero() -> Self {
-		Self { line: 0, col: 0 }
-	}
-}
+impl RefreshFlags {
+	const TEXT_EDIT: Self = Self {
+		parse: true,
+		diagnostics: true,
+		brackets: true,
+		folds: true,
+		visual_lines: true,
+		search: true,
+	};
 
-impl PartialOrd for CursorPos {
-	fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
-		Some(self.cmp(o))
-	}
-}
-impl Ord for CursorPos {
-	fn cmp(&self, o: &Self) -> std::cmp::Ordering {
-		self.line.cmp(&o.line).then(self.col.cmp(&o.col))
-	}
-}
+	const VISUAL_LINES_ONLY: Self = Self {
+		parse: false,
+		diagnostics: false,
+		brackets: false,
+		folds: false,
+		visual_lines: true,
+		search: false,
+	};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Selection {
-	pub anchor: CursorPos,
-	pub head: CursorPos,
-}
-
-impl Selection {
-	pub fn caret(p: CursorPos) -> Self {
-		Self { anchor: p, head: p }
-	}
-	pub fn is_caret(&self) -> bool {
-		self.anchor == self.head
-	}
-	pub fn ordered(&self) -> (CursorPos, CursorPos) {
-		if self.anchor <= self.head {
-			(self.anchor, self.head)
-		} else {
-			(self.head, self.anchor)
-		}
-	}
-}
-
-// ─── Undo with smart command grouping ─────────────────────────────────────────
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EditKind {
-	Insert,
-	Delete,
-	Newline,
-	Paste,
-	Other,
-}
-
-#[derive(Clone)]
-struct Snapshot {
-	text: String,
-	selection: Selection,
-	kind: EditKind,
-	timestamp_ms: u64,
-}
-
-/// Configurable undo history.
-pub struct UndoConfig {
-	/// Max number of undo entries.
-	pub max_history: usize,
-	/// Consecutive edits of the same kind within this window (ms) are grouped.
-	pub group_timeout_ms: u64,
-}
-
-impl Default for UndoConfig {
-	fn default() -> Self {
-		Self {
-			max_history: 500,
-			group_timeout_ms: 800,
-		}
-	}
-}
-
-struct UndoStack {
-	history: Vec<Snapshot>,
-	index: usize,
-	config: UndoConfig,
-}
-
-impl UndoStack {
-	fn new(config: UndoConfig) -> Self {
-		Self {
-			history: Vec::new(),
-			index: 0,
-			config,
-		}
-	}
-
-	fn now_ms() -> u64 {
-		std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.unwrap_or_default()
-			.as_millis() as u64
-	}
-
-	fn push(&mut self, text: String, selection: Selection, kind: EditKind) {
-		let now = Self::now_ms();
-
-		// Smart grouping: if the last entry is the same kind and within timeout,
-		// replace it instead of adding a new entry.
-		if self.index > 0 && !self.history.is_empty() {
-			let last = &self.history[self.index - 1];
-			if last.kind == kind
-				&& kind == EditKind::Insert
-				&& now - last.timestamp_ms < self.config.group_timeout_ms
-			{
-				// Update the entry at current position instead of pushing
-				// (we keep the old anchor text but update the head text)
-				// Actually for grouping we want the *pre-edit* state of the group,
-				// so we just skip saving.
-				return;
-			}
-		}
-
-		self.history.truncate(self.index);
-		self.history.push(Snapshot {
-			text,
-			selection,
-			kind,
-			timestamp_ms: now,
-		});
-		if self.history.len() > self.config.max_history {
-			self.history.remove(0);
-		}
-		self.index = self.history.len();
-	}
-
-	/// Force a new undo boundary regardless of grouping.
-	fn force_boundary(&mut self, text: String, selection: Selection) {
-		self.history.truncate(self.index);
-		self.history.push(Snapshot {
-			text,
-			selection,
-			kind: EditKind::Other,
-			timestamp_ms: Self::now_ms(),
-		});
-		if self.history.len() > self.config.max_history {
-			self.history.remove(0);
-		}
-		self.index = self.history.len();
-	}
-
-	fn undo(&mut self) -> Option<&Snapshot> {
-		if self.index > 0 {
-			self.index -= 1;
-			Some(&self.history[self.index])
-		} else {
-			None
-		}
-	}
-
-	fn redo(&mut self) -> Option<&Snapshot> {
-		if self.index < self.history.len() {
-			let snap = &self.history[self.index];
-			self.index += 1;
-			Some(snap)
-		} else {
-			None
-		}
-	}
+	const BRACKETS_ONLY: Self = Self {
+		parse: false,
+		diagnostics: false,
+		brackets: true,
+		folds: false,
+		visual_lines: false,
+		search: false,
+	};
 }
 
 // ─── Auto-pairs ───────────────────────────────────────────────────────────────
@@ -313,8 +131,7 @@ impl Buffer {
 		hl.parse(text);
 
 		let sel = Selection::caret(CursorPos::zero());
-		let mut undo = UndoStack::new(undo_config);
-		undo.force_boundary(text.to_string(), sel);
+		let undo = UndoStack::new(undo_config);
 
 		let mut buf = Self {
 			rope,
@@ -367,13 +184,11 @@ impl Buffer {
 	}
 
 	pub fn clamp_pos(&self, p: CursorPos) -> CursorPos {
-		let l = p.line.min(self.line_count().saturating_sub(1));
-		CursorPos::new(l, p.col.min(self.line_len(l)))
+		document::clamp_pos(&self.rope, p)
 	}
 
 	fn pos_to_char(&self, p: CursorPos) -> usize {
-		let c = self.clamp_pos(p);
-		self.rope.line_to_char(c.line) + c.col
+		document::pos_to_char(&self.rope, p)
 	}
 
 	pub fn line_text(&self, line: usize) -> String {
@@ -382,6 +197,54 @@ impl Buffer {
 		}
 		let s: String = self.rope.line(line).chars().collect();
 		s.trim_end_matches('\n').trim_end_matches('\r').to_string()
+	}
+
+	pub fn line_slice(&self, line: usize, start_col: usize, end_col: usize) -> String {
+		let text = self.line_text(line);
+		line::slice_chars(&text, start_col, end_col)
+	}
+
+	pub fn token_spans_for_line(
+		&self,
+		line: usize,
+		start_col: usize,
+		end_col: usize,
+	) -> Vec<TokenSpan> {
+		let text = self.line_text(line);
+		let line_len = text.chars().count();
+		let clipped_start = start_col.min(line_len);
+		let clipped_end = end_col.min(line_len);
+		if clipped_start >= clipped_end {
+			return Vec::new();
+		}
+
+		let line_byte_start = self.rope.line_to_byte(line);
+		let line_byte_end = line_byte_start + text.len();
+		let clip_byte_start = line_byte_start + line::char_to_byte_idx(&text, clipped_start);
+		let clip_byte_end = line_byte_start + line::char_to_byte_idx(&text, clipped_end);
+
+		let mut spans = Vec::new();
+		for tok in self.tokens() {
+			if tok.byte_range.end <= line_byte_start || tok.byte_range.start >= line_byte_end {
+				continue;
+			}
+			let byte_start = tok.byte_range.start.max(clip_byte_start);
+			let byte_end = tok.byte_range.end.min(clip_byte_end);
+			if byte_start >= byte_end {
+				continue;
+			}
+			let col_start = line::byte_to_char_idx(&text, byte_start - line_byte_start);
+			let col_end = line::byte_to_char_idx(&text, byte_end - line_byte_start);
+			if col_start < col_end {
+				spans.push(TokenSpan {
+					col_start,
+					col_end,
+					kind: tok.kind,
+				});
+			}
+		}
+		spans.sort_by_key(|span| span.col_start);
+		spans
 	}
 
 	pub fn full_text(&self) -> String {
@@ -422,20 +285,52 @@ impl Buffer {
 	// ── Post-edit refresh ─────────────────────────────────────────────────
 
 	fn post_edit(&mut self) {
-		let text = self.rope.to_string();
-		self.highlighter.parse(&text);
-		self.collect_diagnostics();
-		self.update_bracket_match();
-		let line_count = self.line_count();
-		let lines: Vec<String> = (0..line_count).map(|l| self.line_text(l)).collect();
-		let tree = self.highlighter.tree().cloned();
-		let lang = self.language();
-		self.folds
-			.detect_regions(tree.as_ref(), lang, line_count, &|l| lines[l].clone());
-		self.recompute_visual_lines();
-		if self.search.is_open {
+		self.finish_undo();
+		self.refresh(RefreshFlags::TEXT_EDIT);
+	}
+
+	fn refresh(&mut self, flags: RefreshFlags) {
+		let text = flags.parse.then(|| self.rope.to_string());
+
+		if flags.parse {
+			if let Some(ref text) = text {
+				self.highlighter.parse(text);
+			}
+		}
+		if flags.diagnostics {
+			self.collect_diagnostics();
+		}
+		if flags.brackets {
+			self.update_bracket_match();
+		}
+		if flags.folds {
+			let line_count = self.line_count();
+			let lang = self.language();
+			let tree = self.highlighter.tree();
+			let rope = &self.rope;
+			let mut line_text = |l: usize| {
+				if l >= rope.len_lines() {
+					return String::new();
+				}
+				let s: String = rope.line(l).chars().collect();
+				s.trim_end_matches('\n').trim_end_matches('\r').to_string()
+			};
+			self.folds.detect_regions(tree, lang, line_count, &mut line_text);
+		}
+		if flags.visual_lines {
+			self.recompute_visual_lines();
+		}
+		if flags.search && self.search.is_open {
 			self.search.find_all(&self.rope);
 		}
+	}
+
+	fn refresh_visual_lines(&mut self) {
+		self.refresh(RefreshFlags::VISUAL_LINES_ONLY);
+	}
+
+	fn refresh_bracket_match(&mut self) {
+		self.refresh(RefreshFlags::BRACKETS_ONLY);
 	}
 
 	fn recompute_visual_lines(&mut self) {
@@ -450,27 +345,47 @@ impl Buffer {
 	// ── Undo / Redo ───────────────────────────────────────────────────────
 
 	fn save_undo(&mut self, kind: EditKind) {
-		self.undo_stack
-			.push(self.rope.to_string(), self.selection, kind);
+		self.undo_stack.begin_edit(self.selection, kind);
 	}
 
 	fn save_undo_boundary(&mut self) {
+		self.undo_stack.force_boundary(self.selection);
+	}
+
+	fn finish_undo(&mut self) {
+		self.undo_stack.end_edit(self.selection);
+	}
+
+	fn replace_range(&mut self, start: usize, end: usize, insert: &str) {
+		let deleted = self.rope.slice(start..end).to_string();
 		self.undo_stack
-			.force_boundary(self.rope.to_string(), self.selection);
+			.record_change(start, deleted, insert.to_string());
+		self.rope.remove(start..end);
+		if !insert.is_empty() {
+			self.rope.insert(start, insert);
+		}
+	}
+
+	fn insert_at(&mut self, start: usize, insert: &str) {
+		self.replace_range(start, start, insert);
+	}
+
+	fn insert_char_at(&mut self, start: usize, ch: char) {
+		self.replace_range(start, start, &ch.to_string());
+	}
+
+	fn remove_range(&mut self, start: usize, end: usize) {
+		self.replace_range(start, end, "");
 	}
 
 	pub fn undo(&mut self) {
-		if let Some(snap) = self.undo_stack.undo().cloned() {
-			self.rope = Rope::from_str(&snap.text);
-			self.selection = snap.selection;
+		if self.undo_stack.undo(&mut self.rope, &mut self.selection) {
 			self.post_edit();
 		}
 	}
 
 	pub fn redo(&mut self) {
-		if let Some(snap) = self.undo_stack.redo().cloned() {
-			self.rope = Rope::from_str(&snap.text);
-			self.selection = snap.selection;
+		if self.undo_stack.redo(&mut self.rope, &mut self.selection) {
 			self.post_edit();
 		}
 	}
@@ -507,7 +422,7 @@ impl Buffer {
 			let ci_start = self.rope.line_to_char(li) + left_col;
 			let ci_end = self.rope.line_to_char(li) + right_col_excl.min(line_len);
 			if ci_start < ci_end {
-				self.rope.remove(ci_start..ci_end);
+				self.remove_range(ci_start, ci_end);
 			}
 		}
 		self.selection = Selection::caret(CursorPos::new(top, left_col));
@@ -528,12 +443,12 @@ impl Buffer {
 			let line_len = self.line_len(li);
 			if col <= line_len {
 				let ci = self.rope.line_to_char(li) + col;
-				self.rope.insert(ci, text);
+				self.insert_at(ci, text);
 			} else {
 				// Pad with spaces to reach col, then insert
 				let pad: String = " ".repeat(col - line_len);
 				let ci = self.rope.line_to_char(li) + line_len;
-				self.rope.insert(ci, &format!("{}{}", pad, text));
+				self.insert_at(ci, &format!("{}{}", pad, text));
 			}
 		}
 		self.post_edit();
@@ -553,8 +468,7 @@ impl Buffer {
 		self.save_undo_boundary();
 		let ci_start = self.pos_to_char(s);
 		let ci_end = self.pos_to_char(e);
-		self.rope.remove(ci_start..ci_end);
-		self.rope.insert(ci_start, &transformed);
+		self.replace_range(ci_start, ci_end, &transformed);
 		self.selection = Selection::caret(s);
 		self.post_edit();
 	}
@@ -578,7 +492,7 @@ impl Buffer {
 		self.desired_col = None;
 		let pos = self.selection.head;
 		let ci = self.pos_to_char(pos);
-		self.rope.insert(ci, text);
+		self.insert_at(ci, text);
 
 		let newlines = text.chars().filter(|c| *c == '\n').count();
 		let new_pos = if newlines > 0 {
@@ -633,7 +547,7 @@ impl Buffer {
 		};
 		let real_start = start_ci.min(end_ci);
 		let real_end = start_ci.max(end_ci);
-		self.rope.remove(real_start..real_end);
+		self.remove_range(real_start, real_end);
 		let new_line = line.min(self.line_count().saturating_sub(1));
 		self.selection = Selection::caret(CursorPos::new(new_line, 0));
 		self.post_edit();
@@ -652,11 +566,11 @@ impl Buffer {
 		} else {
 			// No trailing newline on last line — add one first
 			let end = self.rope.len_chars();
-			self.rope.insert_char(end, '\n');
-			end + 1
-		};
+				self.insert_char_at(end, '\n');
+				end + 1
+			};
 		let text = self.clipboard.clone();
-		self.rope.insert(insert_ci, &text);
+		self.insert_at(insert_ci, &text);
 		self.selection = Selection::caret(CursorPos::new(line + 1, 0));
 		self.post_edit();
 	}
@@ -670,7 +584,7 @@ impl Buffer {
 		let line = self.selection.head.line;
 		let insert_ci = self.rope.line_to_char(line);
 		let text = self.clipboard.clone();
-		self.rope.insert(insert_ci, &text);
+		self.insert_at(insert_ci, &text);
 		self.selection = Selection::caret(CursorPos::new(line, 0));
 		self.post_edit();
 	}
@@ -698,7 +612,7 @@ impl Buffer {
 		self.save_undo(EditKind::Insert);
 		for line in (first..=last).rev() {
 			let ci = self.rope.line_to_char(line);
-			self.rope.insert(ci, "\t");
+			self.insert_at(ci, "\t");
 		}
 		let shift = |p: CursorPos| CursorPos::new(p.line, p.col + 1);
 		self.selection.anchor = shift(self.selection.anchor);
@@ -722,7 +636,7 @@ impl Buffer {
 			let text = self.line_text(line);
 			let ci = self.rope.line_to_char(line);
 			let n = if text.starts_with('\t') {
-				self.rope.remove(ci..ci + 1);
+				self.remove_range(ci, ci + 1);
 				1
 			} else {
 				let spaces = text
@@ -731,7 +645,7 @@ impl Buffer {
 					.count()
 					.min(TAB_WIDTH);
 				if spaces > 0 {
-					self.rope.remove(ci..ci + spaces);
+					self.remove_range(ci, ci + spaces);
 				}
 				spaces
 			};
@@ -757,11 +671,11 @@ impl Buffer {
 		self.desired_col = None;
 		let pos = self.selection.head;
 		let ci = self.pos_to_char(pos);
-		self.rope.insert_char(ci, ch);
+		self.insert_char_at(ci, ch);
 		let new = if ch == '\n' {
 			CursorPos::new(pos.line + 1, 0)
 		} else {
-			CursorPos::new(pos.line, pos.col + ch.len_utf8())
+			CursorPos::new(pos.line, pos.col + 1)
 		};
 		self.selection = Selection::caret(new);
 		self.post_edit();
@@ -776,7 +690,7 @@ impl Buffer {
 		self.desired_col = None;
 		let pos = self.selection.head;
 		let ci = self.pos_to_char(pos);
-		self.rope.insert(ci, text);
+		self.insert_at(ci, text);
 		let newlines = text.chars().filter(|c| *c == '\n').count();
 		let new = if newlines > 0 {
 			let after = &text[text.rfind('\n').unwrap() + 1..];
@@ -828,7 +742,7 @@ impl Buffer {
 
 		let ins = format!("\n{}{}", indent, extra);
 		let ci = self.pos_to_char(pos);
-		self.rope.insert(ci, &ins);
+		self.insert_at(ci, &ins);
 		self.selection = Selection::caret(CursorPos::new(pos.line + 1, indent.len() + extra.len()));
 		self.post_edit();
 	}
@@ -840,7 +754,7 @@ impl Buffer {
 				let p = self.selection.head;
 				self.selection = Selection::caret(CursorPos::new(p.line, p.col + 1));
 				self.desired_col = None;
-				self.update_bracket_match();
+				self.refresh_bracket_match();
 				return;
 			}
 		}
@@ -858,8 +772,8 @@ impl Buffer {
 			self.desired_col = None;
 			let p = self.selection.head;
 			let ci = self.pos_to_char(p);
-			self.rope.insert(ci, &format!("{}{}", ch, close));
-			self.selection = Selection::caret(CursorPos::new(p.line, p.col + ch.len_utf8()));
+			self.insert_at(ci, &format!("{}{}", ch, close));
+			self.selection = Selection::caret(CursorPos::new(p.line, p.col + 1));
 			self.post_edit();
 		} else {
 			self.insert_char(ch);
@@ -886,7 +800,7 @@ impl Buffer {
 				if let Some(exp) = matching_close(prev) {
 					if self.char_at(p) == Some(exp) {
 						let cs = self.pos_to_char(CursorPos::new(p.line, p.col - 1));
-						self.rope.remove(cs..cs + 2);
+						self.remove_range(cs, cs + 2);
 						self.selection = Selection::caret(CursorPos::new(p.line, p.col - 1));
 						self.post_edit();
 						return;
@@ -906,7 +820,7 @@ impl Buffer {
 			ds = self.pos_to_char(new_pos);
 			de = self.pos_to_char(p);
 		}
-		self.rope.remove(ds..de);
+		self.remove_range(ds, de);
 		self.selection = Selection::caret(new_pos);
 		self.post_edit();
 	}
@@ -924,7 +838,7 @@ impl Buffer {
 			return;
 		}
 		self.save_undo(EditKind::Delete);
-		self.rope.remove(ci..ci + 1);
+		self.remove_range(ci, ci + 1);
 		self.post_edit();
 	}
 
@@ -942,7 +856,7 @@ impl Buffer {
 		}
 		self.save_undo(EditKind::Delete);
 		let t = self.word_boundary_left(p);
-		self.rope.remove(self.pos_to_char(t)..self.pos_to_char(p));
+		self.remove_range(self.pos_to_char(t), self.pos_to_char(p));
 		self.selection = Selection::caret(t);
 		self.post_edit();
 	}
@@ -961,7 +875,7 @@ impl Buffer {
 		}
 		self.save_undo(EditKind::Delete);
 		let t = self.word_boundary_right(p);
-		self.rope.remove(self.pos_to_char(p)..self.pos_to_char(t));
+		self.remove_range(self.pos_to_char(p), self.pos_to_char(t));
 		self.post_edit();
 	}
 
@@ -977,7 +891,7 @@ impl Buffer {
 		} else {
 			format!("{}\n", t)
 		};
-		self.rope.insert(at, &ins);
+		self.insert_at(at, &ins);
 		self.selection = Selection::caret(CursorPos::new(l + 1, self.selection.head.col));
 		self.post_edit();
 	}
@@ -987,7 +901,7 @@ impl Buffer {
 			return;
 		}
 		let (s, e) = self.selection.ordered();
-		self.rope.remove(self.pos_to_char(s)..self.pos_to_char(e));
+		self.remove_range(self.pos_to_char(s), self.pos_to_char(e));
 		self.selection = Selection::caret(s);
 	}
 
@@ -1025,14 +939,23 @@ impl Buffer {
 
 	pub fn search_replace_current(&mut self) {
 		self.save_undo_boundary();
-		if self.search.replace_current(&mut self.rope).is_some() {
+		if let Some(m) = self.search.current().cloned() {
+			let replacement = self.search.replacement.clone();
+			self.replace_range(m.char_start, m.char_end, &replacement);
 			self.post_edit();
 		}
 	}
 
 	pub fn search_replace_all(&mut self) {
 		self.save_undo_boundary();
-		if self.search.replace_all(&mut self.rope) > 0 {
+		let replacement = self.search.replacement.clone();
+		let matches = self.search.matches.clone();
+		let mut changed = 0usize;
+		for m in matches.iter().rev() {
+			self.replace_range(m.char_start, m.char_end, &replacement);
+			changed += 1;
+		}
+		if changed > 0 {
 			self.post_edit();
 		}
 	}
@@ -1075,8 +998,7 @@ impl Buffer {
 		}
 		self.save_undo(EditKind::Delete);
 		let ci = self.pos_to_char(pos);
-		self.rope.remove(ci..ci + 1);
-		self.rope.insert_char(ci, ch);
+		self.replace_range(ci, ci + 1, &ch.to_string());
 		let new_pos = if ch == '\n' {
 			CursorPos::new(pos.line + 1, 0)
 		} else {
@@ -1113,20 +1035,20 @@ impl Buffer {
 
 	pub fn toggle_fold(&mut self, line: usize) {
 		self.folds.toggle(line);
-		self.recompute_visual_lines();
+		self.refresh_visual_lines();
 	}
 
 	// ── Wrapping ──────────────────────────────────────────────────────────
 
 	pub fn set_wrap(&mut self, enabled: bool) {
 		self.wrap_config.enabled = enabled;
-		self.recompute_visual_lines();
+		self.refresh_visual_lines();
 	}
 
 	pub fn set_wrap_col(&mut self, col: usize) {
 		self.wrap_config.wrap_col = col;
 		if self.wrap_config.enabled {
-			self.recompute_visual_lines();
+			self.refresh_visual_lines();
 		}
 	}
 
@@ -1137,7 +1059,7 @@ impl Buffer {
 		if !extend && !self.selection.is_caret() {
 			let (s, _) = self.selection.ordered();
 			self.selection = Selection::caret(s);
-			self.update_bracket_match();
+			self.refresh_bracket_match();
 			return;
 		}
 		let p = self.selection.head;
@@ -1156,7 +1078,7 @@ impl Buffer {
 		if !extend && !self.selection.is_caret() {
 			let (_, e) = self.selection.ordered();
 			self.selection = Selection::caret(e);
-			self.update_bracket_match();
+			self.refresh_bracket_match();
 			return;
 		}
 		let p = self.selection.head;
@@ -1315,7 +1237,7 @@ impl Buffer {
 		} else {
 			self.selection = Selection::caret(p);
 		}
-		self.update_bracket_match();
+		self.refresh_bracket_match();
 	}
 
 	pub fn click_to_pos(&self, line: usize, col: usize) -> CursorPos {
@@ -1489,14 +1411,15 @@ impl Buffer {
 				TokenKind::Comment => {}
 				TokenKind::Punctuation => match slice {
 					"(" => {
-						let (line, col) = self.byte_to_char_col(tok.byte_range.start);
+						let (line, col) = document::byte_to_char_col(&self.rope, tok.byte_range.start);
 						paren_stack.push((line, col));
 						at_stmt_start = false;
 					}
 					")" => {
 						at_stmt_start = false;
 						if paren_stack.pop().is_none() {
-							let (line, col) = self.byte_to_char_col(tok.byte_range.start);
+							let (line, col) =
+								document::byte_to_char_col(&self.rope, tok.byte_range.start);
 							self.diagnostics.push(Diagnostic {
 								line,
 								col_start: col,
@@ -1511,7 +1434,7 @@ impl Buffer {
 				TokenKind::Keyword => at_stmt_start = false,
 				TokenKind::Identifier if at_stmt_start => {
 					// First word of a statement is not a recognized keyword.
-					let (line, col) = self.byte_to_char_col(tok.byte_range.start);
+					let (line, col) = document::byte_to_char_col(&self.rope, tok.byte_range.start);
 					let msg = match sql_keyword_near_miss(slice) {
 						Some(kw) => format!(
 							"Unrecognized SQL command `{}`, did you mean `{}`?",
@@ -1531,7 +1454,7 @@ impl Buffer {
 					// Mid-statement: flag all-uppercase identifiers that look like
 					// mistyped SQL keywords (edit distance ≤ 1, including transpositions).
 					if let Some(kw) = sql_keyword_near_miss(slice) {
-						let (line, col) = self.byte_to_char_col(tok.byte_range.start);
+						let (line, col) = document::byte_to_char_col(&self.rope, tok.byte_range.start);
 						self.diagnostics.push(Diagnostic {
 							line,
 							col_start: col,
@@ -1555,30 +1478,23 @@ impl Buffer {
 		}
 	}
 
-	/// Convert a byte offset in the document to (line, char-column).
-	fn byte_to_char_col(&self, byte: usize) -> (usize, usize) {
-		let char_idx = self.rope.byte_to_char(byte);
-		let line = self.rope.char_to_line(char_idx);
-		let col = char_idx - self.rope.line_to_char(line);
-		(line, col)
-	}
-
 	fn walk_errors<'t>(&mut self, node: tree_sitter::Node<'t>) {
 		if node.is_error() || node.is_missing() {
-			let s = node.start_position();
-			let e = node.end_position();
-			let snippet = if s.row < self.line_count() {
-				let lt = self.line_text(s.row);
-				let a = s.column.min(lt.len());
-				let b = if s.row == e.row {
-					e.column.min(lt.len())
+			let start =
+				document::point_to_char_pos(&self.rope, node.start_position(), |line| self.line_text(line));
+			let end =
+				document::point_to_char_pos(&self.rope, node.end_position(), |line| self.line_text(line));
+			let snippet = if start.line < self.line_count() {
+				let end_col = if start.line == end.line {
+					end.col
 				} else {
-					lt.len()
+					self.line_len(start.line)
 				};
-				if a < b {
-					format!("`{}`", &lt[a..b])
-				} else {
+				let snippet = self.line_slice(start.line, start.col, end_col);
+				if snippet.is_empty() {
 					format!("`{}`", node.kind())
+				} else {
+					format!("`{}`", snippet)
 				}
 			} else {
 				format!("`{}`", node.kind())
@@ -1589,12 +1505,12 @@ impl Buffer {
 				format!("Unexpected {}", snippet)
 			};
 			self.diagnostics.push(Diagnostic {
-				line: s.row,
-				col_start: s.column,
-				col_end: if s.row == e.row {
-					e.column.max(s.column + 1)
+				line: start.line,
+				col_start: start.col,
+				col_end: if start.line == end.line {
+					end.col.max(start.col + 1)
 				} else {
-					self.line_len(s.row).max(s.column + 1)
+					self.line_len(start.line).max(start.col + 1)
 				},
 				message: msg,
 			});
@@ -1675,8 +1591,7 @@ impl Buffer {
 			// Splice just the content portion of the line (leave the newline).
 			let line_start = self.rope.line_to_char(line);
 			let content_end = line_start + self.line_text(line).chars().count();
-			self.rope.remove(line_start..content_end);
-			self.rope.insert(line_start, &new_text);
+			self.replace_range(line_start, content_end, &new_text);
 			changed += 1;
 		}
 

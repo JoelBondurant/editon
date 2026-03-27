@@ -2,12 +2,14 @@ use iced::keyboard::{self, Key};
 use iced::widget::{column, container, row, text, Space};
 use iced::{event, Element, Length, Subscription, Task, Theme};
 
-use super::buffer::{Buffer, CursorPos, Selection, UndoConfig};
+use super::buffer::Buffer;
+use super::coords::{line, CursorPos, Selection};
 use super::highlight::SyntaxLanguage;
 use super::theme::EditorTheme;
+use super::undo::UndoConfig;
 use super::vim::{NormalEdit, VimMode};
 use super::widget::{EditorAction, EditorWidget};
-use super::{buffer, widget};
+use super::widget;
 
 // ─── Public message type ──────────────────────────────────────────────────────
 
@@ -883,7 +885,7 @@ impl CodeEditor {
 		}
 		let head = self.buffer.selection.head;
 		let hlt = self.buffer.line_text(head.line);
-		let vcol = buffer::visual_col_of(&hlt, head.col);
+		let vcol = line::visual_col_of(&hlt, head.col);
 		let cx = vcol as f32 * widget::CHAR_W;
 		let gw = widget::gutter_width(self.buffer.line_count());
 		let mm = if self.view.show_minimap {

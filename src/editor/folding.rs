@@ -47,7 +47,7 @@ impl FoldState {
 		tree: Option<&tree_sitter::Tree>,
 		language: SyntaxLanguage,
 		line_count: usize,
-		line_text: &dyn Fn(usize) -> String,
+		line_text: &mut dyn FnMut(usize) -> String,
 	) {
 		self.regions.clear();
 
@@ -77,17 +77,11 @@ impl FoldState {
 	fn detect_sql_statement_folds(
 		&mut self,
 		line_count: usize,
-		line_text: &dyn Fn(usize) -> String,
+		line_text: &mut dyn FnMut(usize) -> String,
 	) {
-		// Collect all lines, pre-trimmed.
-		let lines: Vec<String> = (0..line_count).map(|l| line_text(l)).collect();
-
 		// Find every line that starts a new top-level statement.
-		let starts: Vec<usize> = lines
-			.iter()
-			.enumerate()
-			.filter(|(_, t)| is_sql_statement_start(t))
-			.map(|(i, _)| i)
+		let starts: Vec<usize> = (0..line_count)
+			.filter(|&i| is_sql_statement_start(&line_text(i)))
 			.collect();
 
 		for (idx, &start) in starts.iter().enumerate() {
@@ -100,7 +94,8 @@ impl FoldState {
 			// (which belong to the next statement, not this one).
 			let mut end = start + 1;
 			for li in (start + 1..search_end).rev() {
-				let t = lines[li].trim();
+				let text = line_text(li);
+				let t = text.trim();
 				if !t.is_empty() && !t.starts_with("--") {
 					end = li;
 					break;
@@ -153,7 +148,7 @@ impl FoldState {
 		}
 	}
 
-	fn detect_indent_folds(&mut self, line_count: usize, line_text: &dyn Fn(usize) -> String) {
+	fn detect_indent_folds(&mut self, line_count: usize, line_text: &mut dyn FnMut(usize) -> String) {
 		let mut i = 0;
 		while i < line_count {
 			let text = line_text(i);

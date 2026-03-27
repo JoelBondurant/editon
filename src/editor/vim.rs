@@ -1,8 +1,8 @@
 use iced::keyboard::{self, Key};
 use iced::Task;
 
-use super::buffer::{CursorPos, Selection};
-use super::code_editor::{CodeEditor, EditorMsg};
+use super::coords::{CursorPos, Selection};
+use super::core::{CodeEditor, EditorMsg};
 use super::widget;
 
 // ─── Vim mode ─────────────────────────────────────────────────────────────────
