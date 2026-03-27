@@ -176,6 +176,74 @@ impl Default for EditorState {
 // ─── Private draw helpers ─────────────────────────────────────────────────────
 
 impl<'a, Message> EditorWidget<'a, Message> {
+	fn draw_visual_lines(
+		&self,
+		renderer: &mut Renderer,
+		b: Rectangle,
+		gw: f32,
+		tx: f32,
+		editor_h: f32,
+		st: &EditorState,
+	) {
+		let vls = &self.buffer.document.visual_lines;
+		let first = (self.scroll_y / LINE_H).floor() as usize;
+		let last = (first + (editor_h / LINE_H).ceil() as usize + 2).min(vls.len());
+		let active = self.buffer.session.selection.head.line;
+
+		for vi in first..last {
+			if let Some(vl) = vls.get(vi) {
+				let y = b.y + TOP_PAD + (vi as f32 * LINE_H) - self.scroll_y;
+				if y + LINE_H < b.y || y > b.y + editor_h {
+					continue;
+				}
+				self.draw_line_gutter(renderer, b, gw, vl.doc_line, y, active, vl.is_first);
+			}
+		}
+
+		// Clip text content to the region left of the minimap/scrollbar.
+		let mm_x = self.minimap_x(&b);
+		let content_clip = Rectangle {
+			x: b.x + gw,
+			y: b.y,
+			width: mm_x - (b.x + gw),
+			height: editor_h,
+		};
+		renderer.start_layer(content_clip);
+		{
+			for vi in first..last {
+				if let Some(vl) = vls.get(vi) {
+					let y = b.y + TOP_PAD + (vi as f32 * LINE_H) - self.scroll_y;
+					if y + LINE_H < b.y || y > b.y + editor_h {
+						continue;
+					}
+					self.draw_line_highlights(renderer, b, gw, tx, vl.doc_line, y, active, st, vl);
+					self.draw_line_tokens(renderer, b, tx, vl.doc_line, y, vl);
+				}
+			}
+		}
+		renderer.end_layer();
+	}
+
+	fn draw_ui_layers(
+		&self,
+		renderer: &mut Renderer,
+		b: Rectangle,
+		tx: f32,
+		editor_h: f32,
+		st: &EditorState,
+	) {
+		self.draw_cursor(renderer, b, tx, editor_h, st);
+		self.draw_tooltip(renderer, b, tx, st);
+
+		if self.show_minimap {
+			self.draw_minimap(renderer, b, editor_h);
+		}
+		self.draw_scrollbar(renderer, b, editor_h);
+		if self.buffer.session.search.is_open {
+			self.draw_search_panel(renderer, b);
+		}
+	}
+
 	fn draw_background(&self, renderer: &mut Renderer, b: Rectangle, gw: f32) {
 		let th = self.theme;
 		fill(renderer, b, th.background);
@@ -1058,65 +1126,8 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for EditorWidget<'a, M
 		renderer.start_layer(b);
 		{
 			self.draw_background(renderer, b, gw);
-
-			let vls = &self.buffer.document.visual_lines;
-			let first = (self.scroll_y / LINE_H).floor() as usize;
-			let last = (first + (editor_h / LINE_H).ceil() as usize + 2).min(vls.len());
-			let active = self.buffer.session.selection.head.line;
-
-			for vi in first..last {
-				if let Some(vl) = vls.get(vi) {
-					let y = b.y + TOP_PAD + (vi as f32 * LINE_H) - self.scroll_y;
-					if y + LINE_H < b.y || y > b.y + editor_h {
-						continue;
-					}
-					self.draw_line_gutter(renderer, b, gw, vl.doc_line, y, active, vl.is_first);
-				}
-			}
-
-			// Clip text content to the region left of the minimap/scrollbar.
-			let mm_x = self.minimap_x(&b);
-			let content_clip = Rectangle {
-				x: b.x + gw,
-				y: b.y,
-				width: mm_x - (b.x + gw),
-				height: editor_h,
-			};
-			renderer.start_layer(content_clip);
-			{
-				for vi in first..last {
-					if let Some(vl) = vls.get(vi) {
-						let y = b.y + TOP_PAD + (vi as f32 * LINE_H) - self.scroll_y;
-						if y + LINE_H < b.y || y > b.y + editor_h {
-							continue;
-						}
-						self.draw_line_highlights(
-							renderer,
-							b,
-							gw,
-							tx,
-							vl.doc_line,
-							y,
-							active,
-							st,
-							vl,
-						);
-						self.draw_line_tokens(renderer, b, tx, vl.doc_line, y, vl);
-					}
-				}
-
-				self.draw_cursor(renderer, b, tx, editor_h, st);
-				self.draw_tooltip(renderer, b, tx, st);
-			}
-			renderer.end_layer();
-
-			if self.show_minimap {
-				self.draw_minimap(renderer, b, editor_h);
-			}
-			self.draw_scrollbar(renderer, b, editor_h);
-			if self.buffer.session.search.is_open {
-				self.draw_search_panel(renderer, b);
-			}
+			self.draw_visual_lines(renderer, b, gw, tx, editor_h, st);
+			self.draw_ui_layers(renderer, b, tx, editor_h, st);
 		}
 		renderer.end_layer();
 	}
