@@ -360,7 +360,10 @@ impl Buffer {
 			return 0;
 		}
 		let s: String = self.rope.line(line).chars().collect();
-		s.trim_end_matches('\n').trim_end_matches('\r').len()
+		s.trim_end_matches('\n')
+			.trim_end_matches('\r')
+			.chars()
+			.count()
 	}
 
 	pub fn clamp_pos(&self, p: CursorPos) -> CursorPos {
@@ -779,7 +782,7 @@ impl Buffer {
 			let after = &text[text.rfind('\n').unwrap() + 1..];
 			CursorPos::new(pos.line + newlines, after.len())
 		} else {
-			CursorPos::new(pos.line, pos.col + text.len())
+			CursorPos::new(pos.line, pos.col + text.chars().count())
 		};
 		self.selection = Selection::caret(new);
 		self.post_edit();

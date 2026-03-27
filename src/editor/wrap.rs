@@ -1,9 +1,9 @@
 #[derive(Debug, Clone, Copy)]
 pub struct VisualLine {
 	pub doc_line: usize,
-	/// Byte offset within the document line where this visual line starts.
+	/// Character offset within the document line where this visual line starts.
 	pub col_start: usize,
-	/// Byte offset within the document line where this visual line ends (exclusive).
+	/// Character offset within the document line where this visual line ends (exclusive).
 	pub col_end: usize,
 	/// Whether this is the first visual line of the doc line (for line number display).
 	pub is_first: bool,
@@ -41,31 +41,31 @@ pub fn compute_visual_lines(
 		}
 
 		let text = line_text(doc_line);
-		if !config.enabled || text.len() <= config.wrap_col {
+		let chars: Vec<char> = text.chars().collect();
+		let line_len = chars.len();
+		if !config.enabled || line_len <= config.wrap_col {
 			visual.push(VisualLine {
 				doc_line,
 				col_start: 0,
-				col_end: text.len(),
+				col_end: line_len,
 				is_first: true,
 			});
 		} else {
 			// Wrap at word boundaries when possible
 			let mut col = 0;
 			let mut first = true;
-			while col < text.len() {
-				let remaining = text.len() - col;
+			while col < line_len {
+				let remaining = line_len - col;
 				let chunk_end = if remaining <= config.wrap_col {
-					text.len()
+					line_len
 				} else {
 					// Try to find a good break point (space, comma, paren)
 					let max_end = col + config.wrap_col;
-					let slice = &text[col..max_end];
-					// Search backwards for a break character
-					let break_pos = slice
-						.rfind(|c: char| c == ' ' || c == ',' || c == '(' || c == ')')
-						.map(|p| col + p + 1) // include the break char
-						.unwrap_or(max_end); // hard break if no good spot
-					break_pos
+					(col..max_end)
+						.rev()
+						.find(|&idx| matches!(chars[idx], ' ' | ',' | '(' | ')'))
+						.map(|idx| idx + 1)
+						.unwrap_or(max_end)
 				};
 
 				visual.push(VisualLine {

@@ -56,13 +56,13 @@ impl CodeEditor {
 		use keyboard::key::Named;
 		let shift = mods.shift();
 		let ctrl = mods.command();
-		let was_g = self.pending_g;
-		self.pending_g = false;
-		let was_z = self.pending_z;
-		self.pending_z = false;
+		let was_g = self.vim.pending_g;
+		self.vim.pending_g = false;
+		let was_z = self.vim.pending_z;
+		self.vim.pending_z = false;
 
 		// f/F/t/T pending: next key is the target char
-		if let Some(find_kind) = self.pending_find.take() {
+		if let Some(find_kind) = self.vim.pending_find.take() {
 			let target = match &key {
 				Key::Named(Named::Space) => Some(' '),
 				Key::Character(kc) => {
@@ -77,7 +77,7 @@ impl CodeEditor {
 			};
 			if let Some(tc) = target {
 				let count = self.take_count();
-				self.last_find = Some((find_kind, tc));
+				self.vim.last_find = Some((find_kind, tc));
 				self.do_find(find_kind, tc, count, false);
 				self.update_status();
 				self.ensure_cursor_visible();
@@ -86,8 +86,8 @@ impl CodeEditor {
 		}
 
 		// `r` (replace char) consumes the very next key as the replacement
-		if self.pending_op == Some('r') {
-			self.pending_op = None;
+		if self.vim.pending_op == Some('r') {
+			self.vim.pending_op = None;
 			let ch = match &key {
 				Key::Named(Named::Space) => Some(' '),
 				Key::Named(Named::Tab) => Some('\t'),
@@ -101,9 +101,9 @@ impl CodeEditor {
 				for _ in 0..count {
 					self.buffer.replace_char(c);
 				}
-				self.last_edit = Some(NormalEdit::ReplaceChar { ch: c, count });
+				self.vim.last_edit = Some(NormalEdit::ReplaceChar { ch: c, count });
 			} else {
-				self.vim_count.clear();
+				self.vim.count.clear();
 			}
 			self.update_status();
 			self.ensure_cursor_visible();
@@ -116,8 +116,8 @@ impl CodeEditor {
 					self.buffer.search_close();
 				}
 				self.buffer.selection.anchor = self.buffer.selection.head;
-				self.vim_count.clear();
-				self.pending_op = None;
+				self.vim.count.clear();
+				self.vim.pending_op = None;
 			}
 			Key::Named(Named::ArrowLeft) if ctrl => self.buffer.move_word_left(shift),
 			Key::Named(Named::ArrowRight) if ctrl => self.buffer.move_word_right(shift),
@@ -130,11 +130,11 @@ impl CodeEditor {
 			Key::Named(Named::Home) => self.buffer.move_home(shift),
 			Key::Named(Named::End) => self.buffer.move_end(shift),
 			Key::Named(Named::PageUp) => {
-				let v = widget::visible_line_count(self.viewport_h);
+				let v = widget::visible_line_count(self.view.viewport_h);
 				self.buffer.page_up(v, false);
 			}
 			Key::Named(Named::PageDown) => {
-				let v = widget::visible_line_count(self.viewport_h);
+				let v = widget::visible_line_count(self.view.viewport_h);
 				self.buffer.page_down(v, false);
 			}
 
@@ -153,11 +153,11 @@ impl CodeEditor {
 							let e = !self.buffer.wrap_config.enabled;
 							self.set_wrap_enabled(e);
 						}
-						"m" | "M" => self.show_minimap = !self.show_minimap,
-						"l" | "L" => self.show_whitespace = !self.show_whitespace,
+						"m" | "M" => self.view.show_minimap = !self.view.show_minimap,
+						"l" | "L" => self.view.show_whitespace = !self.view.show_whitespace,
 						"r" | "R" => self.buffer.redo(),
 						"v" | "V" => {
-							self.vim_mode = VimMode::VisualBlock;
+							self.vim.mode = VimMode::VisualBlock;
 							self.buffer.selection.anchor = self.buffer.selection.head;
 						}
 						_ => {}
@@ -177,9 +177,9 @@ impl CodeEditor {
 					// Count prefix digits
 					let is_count_digit = ch.len() == 1
 						&& ch.chars().next().map_or(false, |c| c.is_ascii_digit())
-						&& (ch != "0" || !self.vim_count.is_empty());
+						&& (ch != "0" || !self.vim.count.is_empty());
 					if is_count_digit {
-						self.vim_count.push_str(ch);
+						self.vim.count.push_str(ch);
 						self.update_status();
 						return Task::none();
 					}
@@ -187,7 +187,7 @@ impl CodeEditor {
 					let count = self.take_count();
 
 					// Pending operator + motion/doubling
-					if let Some(op) = self.pending_op.take() {
+					if let Some(op) = self.vim.pending_op.take() {
 						if (op == '>' && ch == ">") || (op == '<' && ch == "<") {
 							let line = self.buffer.selection.head.line;
 							let last =
@@ -207,20 +207,20 @@ impl CodeEditor {
 							return Task::none();
 						}
 						// Text object prefix: 'i'/'a' followed by object key (w, s, …)
-						if let Some(obj) = self.pending_obj_prefix.take() {
+						if let Some(obj) = self.vim.pending_obj_prefix.take() {
 							let motion = format!("{}{}", obj, ch);
 							return self.exec_operator_motion(op, &motion, count);
 						}
 						// Wait for text-object key
 						if (ch == "i" || ch == "a") && !was_g {
-							self.pending_op = Some(op);
-							self.pending_obj_prefix = ch.chars().next();
+							self.vim.pending_op = Some(op);
+							self.vim.pending_obj_prefix = ch.chars().next();
 							return Task::none();
 						}
 						// `g` inside dg/yg/cg — wait for second `g`
 						if ch == "g" && !was_g {
-							self.pending_op = Some(op);
-							self.pending_g = true;
+							self.vim.pending_op = Some(op);
+							self.vim.pending_g = true;
 							return Task::none();
 						}
 						let task = match (op, ch) {
@@ -228,7 +228,7 @@ impl CodeEditor {
 								let line = self.buffer.selection.head.line;
 								let yanked = self.buffer.yank_lines(line, count);
 								self.buffer.delete_lines(line, count);
-								self.last_edit = Some(NormalEdit::LineOp { op: 'd', count });
+								self.vim.last_edit = Some(NormalEdit::LineOp { op: 'd', count });
 								self.update_status();
 								self.ensure_cursor_visible();
 								iced::clipboard::write(yanked)
@@ -248,7 +248,7 @@ impl CodeEditor {
 								};
 								let _ = self.buffer.cut();
 								self.buffer.selection = Selection::caret(CursorPos::new(line, 0));
-								self.last_edit = Some(NormalEdit::LineOp { op: 'c', count });
+								self.vim.last_edit = Some(NormalEdit::LineOp { op: 'c', count });
 								self.enter_insert_mode();
 								self.update_status();
 								self.ensure_cursor_visible();
@@ -288,19 +288,19 @@ impl CodeEditor {
 							self.enter_insert_mode();
 						}
 						"v" => {
-							self.vim_mode = VimMode::Visual;
+							self.vim.mode = VimMode::Visual;
 							self.buffer.selection.anchor = self.buffer.selection.head;
 						}
 						"V" => {
-							self.vim_mode = VimMode::VisualLine;
+							self.vim.mode = VimMode::VisualLine;
 							self.buffer.select_lines(count);
 						}
-						"d" => self.pending_op = Some('d'),
-						"y" => self.pending_op = Some('y'),
-						"c" => self.pending_op = Some('c'),
-						"r" => self.pending_op = Some('r'),
-						">" => self.pending_op = Some('>'),
-						"<" => self.pending_op = Some('<'),
+						"d" => self.vim.pending_op = Some('d'),
+						"y" => self.vim.pending_op = Some('y'),
+						"c" => self.vim.pending_op = Some('c'),
+						"r" => self.vim.pending_op = Some('r'),
+						">" => self.vim.pending_op = Some('>'),
+						"<" => self.vim.pending_op = Some('<'),
 						"C" => {
 							return self.exec_operator_motion('c', "$", 1);
 						}
@@ -326,7 +326,7 @@ impl CodeEditor {
 									self.buffer.move_right(false);
 								}
 							}
-							self.last_edit = Some(NormalEdit::ToggleCase { count });
+							self.vim.last_edit = Some(NormalEdit::ToggleCase { count });
 						}
 						"*" => {
 							if let Some(word) = self.buffer.word_under_cursor() {
@@ -340,7 +340,7 @@ impl CodeEditor {
 								self.ensure_cursor_visible();
 							}
 						}
-						":" => self.vim_mode = VimMode::Command,
+						":" => self.vim.mode = VimMode::Command,
 						"h" => {
 							for _ in 0..count {
 								self.buffer.move_left(false);
@@ -380,47 +380,47 @@ impl CodeEditor {
 						"$" => self.buffer.move_end(false),
 						"^" => self.buffer.move_home(false),
 						"g" if was_g => self.buffer.move_to_start(false),
-						"g" => self.pending_g = true,
+						"g" => self.vim.pending_g = true,
 						"G" => self.buffer.move_to_end(false),
 						"x" => {
 							for _ in 0..count {
 								self.buffer.delete();
 							}
-							self.last_edit = Some(NormalEdit::DeleteChar { count });
+							self.vim.last_edit = Some(NormalEdit::DeleteChar { count });
 						}
 						"X" => {
 							for _ in 0..count {
 								self.buffer.backspace();
 							}
-							self.last_edit = Some(NormalEdit::BackspaceChar { count });
+							self.vim.last_edit = Some(NormalEdit::BackspaceChar { count });
 						}
 						"u" => self.buffer.undo(),
 						"n" => self.buffer.search_next(),
 						"N" => self.buffer.search_prev(),
 						// ── find-char motions ───────────────────────────────
 						"f" => {
-							self.pending_find = Some('f');
+							self.vim.pending_find = Some('f');
 							return Task::none();
 						}
 						"F" => {
-							self.pending_find = Some('F');
+							self.vim.pending_find = Some('F');
 							return Task::none();
 						}
 						"t" => {
-							self.pending_find = Some('t');
+							self.vim.pending_find = Some('t');
 							return Task::none();
 						}
 						"T" => {
-							self.pending_find = Some('T');
+							self.vim.pending_find = Some('T');
 							return Task::none();
 						}
 						";" => {
-							if let Some((kind, target)) = self.last_find {
+							if let Some((kind, target)) = self.vim.last_find {
 								self.do_find(kind, target, count, false);
 							}
 						}
 						"," => {
-							if let Some((kind, target)) = self.last_find {
+							if let Some((kind, target)) = self.vim.last_find {
 								let rev = match kind {
 									'f' => 'F',
 									'F' => 'f',
@@ -433,12 +433,12 @@ impl CodeEditor {
 						}
 						// ── scroll centering ────────────────────────────────
 						"z" => {
-							self.pending_z = true;
+							self.vim.pending_z = true;
 							return Task::none();
 						}
 						// ── dot repeat ──────────────────────────────────────
 						"." => {
-							if let Some(edit) = self.last_edit.clone() {
+							if let Some(edit) = self.vim.last_edit.clone() {
 								let task = self.replay_edit(edit);
 								self.update_status();
 								self.ensure_cursor_visible();
@@ -562,7 +562,7 @@ impl CodeEditor {
 				let yanked = self.buffer.cut();
 				self.buffer.selection = Selection::caret(self.buffer.selection.head);
 				self.buffer.clipboard_is_line = false;
-				self.last_edit = Some(NormalEdit::OperatorMotion {
+				self.vim.last_edit = Some(NormalEdit::OperatorMotion {
 					op: 'd',
 					motion: motion.to_string(),
 					count,
@@ -587,7 +587,7 @@ impl CodeEditor {
 			'c' => {
 				let _ = self.buffer.cut();
 				self.buffer.selection = Selection::caret(self.buffer.selection.head);
-				self.last_edit = Some(NormalEdit::ChangeMotion {
+				self.vim.last_edit = Some(NormalEdit::ChangeMotion {
 					motion: motion.to_string(),
 					count,
 				});
@@ -610,10 +610,10 @@ impl CodeEditor {
 	) -> Task<EditorMsg> {
 		use keyboard::key::Named;
 		let ctrl = mods.command();
-		let is_line = self.vim_mode == VimMode::VisualLine;
+		let is_line = self.vim.mode == VimMode::VisualLine;
 
 		// Text object completion: pending i/a + this char (e.g. viw, vaw)
-		if let Some(obj) = self.pending_obj_prefix.take() {
+		if let Some(obj) = self.vim.pending_obj_prefix.take() {
 			if let Key::Character(ref kc) = key {
 				let ch = if ctrl {
 					kc.as_str()
@@ -644,9 +644,9 @@ impl CodeEditor {
 			let ch = text.as_deref().unwrap_or("");
 			let is_count_digit = ch.len() == 1
 				&& ch.chars().next().map_or(false, |c| c.is_ascii_digit())
-				&& (ch != "0" || !self.vim_count.is_empty());
+				&& (ch != "0" || !self.vim.count.is_empty());
 			if is_count_digit {
-				self.vim_count.push_str(ch);
+				self.vim.count.push_str(ch);
 				return Task::none();
 			}
 		}
@@ -655,7 +655,7 @@ impl CodeEditor {
 		match key {
 			Key::Named(Named::Escape) => {
 				self.buffer.selection.anchor = self.buffer.selection.head;
-				self.vim_mode = VimMode::Normal;
+				self.vim.mode = VimMode::Normal;
 			}
 			Key::Named(Named::ArrowLeft) => self.buffer.move_left(true),
 			Key::Named(Named::ArrowRight) => self.buffer.move_right(true),
@@ -672,7 +672,7 @@ impl CodeEditor {
 					match ch {
 						"f" | "F" => self.buffer.search_open(),
 						"v" | "V" => {
-							self.vim_mode = VimMode::VisualBlock;
+							self.vim.mode = VimMode::VisualBlock;
 						}
 						_ => {}
 					}
@@ -714,12 +714,12 @@ impl CodeEditor {
 						"g" => self.buffer.move_to_start(true),
 						">" => {
 							self.buffer.indent_lines();
-							self.vim_mode = VimMode::Normal;
+							self.vim.mode = VimMode::Normal;
 							self.buffer.selection.anchor = self.buffer.selection.head;
 						}
 						"<" => {
 							self.buffer.dedent_lines();
-							self.vim_mode = VimMode::Normal;
+							self.vim.mode = VimMode::Normal;
 							self.buffer.selection.anchor = self.buffer.selection.head;
 						}
 						"y" => {
@@ -730,7 +730,7 @@ impl CodeEditor {
 								self.buffer.copy()
 							};
 							self.buffer.selection.anchor = self.buffer.selection.head;
-							self.vim_mode = VimMode::Normal;
+							self.vim.mode = VimMode::Normal;
 							self.update_status();
 							self.ensure_cursor_visible();
 							if !yanked.is_empty() {
@@ -748,7 +748,7 @@ impl CodeEditor {
 							} else {
 								self.buffer.cut()
 							};
-							self.vim_mode = VimMode::Normal;
+							self.vim.mode = VimMode::Normal;
 							self.update_status();
 							self.ensure_cursor_visible();
 							if !yanked.is_empty() {
@@ -770,39 +770,39 @@ impl CodeEditor {
 						}
 						// ── text objects in visual mode ──────────────────
 						"i" | "a" => {
-							self.pending_obj_prefix = ch.chars().next();
+							self.vim.pending_obj_prefix = ch.chars().next();
 							return Task::none();
 						}
 						"v" => {
-							self.vim_mode = if is_line {
+							self.vim.mode = if is_line {
 								VimMode::Visual
 							} else {
 								VimMode::Normal
 							};
-							if self.vim_mode == VimMode::Normal {
+							if self.vim.mode == VimMode::Normal {
 								self.buffer.selection.anchor = self.buffer.selection.head;
 							}
 						}
 						"V" => {
 							if is_line {
-								self.vim_mode = VimMode::Normal;
+								self.vim.mode = VimMode::Normal;
 								self.buffer.selection.anchor = self.buffer.selection.head;
 							} else {
-								self.vim_mode = VimMode::VisualLine;
+								self.vim.mode = VimMode::VisualLine;
 								let (s, e) = self.buffer.selection.ordered();
 								self.buffer.select_lines(e.line - s.line + 1);
 							}
 						}
 						"u" => {
 							self.buffer.transform_case(false);
-							self.vim_mode = VimMode::Normal;
+							self.vim.mode = VimMode::Normal;
 							self.update_status();
 							self.ensure_cursor_visible();
 							return Task::none();
 						}
 						"U" => {
 							self.buffer.transform_case(true);
-							self.vim_mode = VimMode::Normal;
+							self.vim.mode = VimMode::Normal;
 							self.update_status();
 							self.ensure_cursor_visible();
 							return Task::none();
@@ -815,7 +815,7 @@ impl CodeEditor {
 		}
 
 		// V-LINE: snap selection to whole lines
-		if self.vim_mode == VimMode::VisualLine {
+		if self.vim.mode == VimMode::VisualLine {
 			let (s, e) = self.buffer.selection.ordered();
 			if self.buffer.selection.head >= self.buffer.selection.anchor {
 				self.buffer.selection.anchor = CursorPos::new(s.line, 0);
@@ -846,9 +846,9 @@ impl CodeEditor {
 			let ch = text.as_deref().unwrap_or("");
 			let is_count_digit = ch.len() == 1
 				&& ch.chars().next().map_or(false, |c| c.is_ascii_digit())
-				&& (ch != "0" || !self.vim_count.is_empty());
+				&& (ch != "0" || !self.vim.count.is_empty());
 			if is_count_digit {
-				self.vim_count.push_str(ch);
+				self.vim.count.push_str(ch);
 				return Task::none();
 			}
 		}
@@ -857,7 +857,7 @@ impl CodeEditor {
 		match key {
 			Key::Named(Named::Escape) => {
 				self.buffer.selection.anchor = self.buffer.selection.head;
-				self.vim_mode = VimMode::Normal;
+				self.vim.mode = VimMode::Normal;
 			}
 			Key::Named(Named::ArrowLeft) => self.buffer.move_left(true),
 			Key::Named(Named::ArrowRight) => self.buffer.move_right(true),
@@ -875,7 +875,7 @@ impl CodeEditor {
 						"v" | "V" => {
 							// Ctrl+V again collapses back to Normal
 							self.buffer.selection.anchor = self.buffer.selection.head;
-							self.vim_mode = VimMode::Normal;
+							self.vim.mode = VimMode::Normal;
 						}
 						_ => {}
 					}
@@ -915,9 +915,9 @@ impl CodeEditor {
 						"$" => self.buffer.move_end(true),
 						"G" => self.buffer.move_to_end(true),
 						"g" => self.buffer.move_to_start(true),
-						"v" => self.vim_mode = VimMode::Visual,
+						"v" => self.vim.mode = VimMode::Visual,
 						"V" => {
-							self.vim_mode = VimMode::VisualLine;
+							self.vim.mode = VimMode::VisualLine;
 							let (s, e) = self.buffer.selection.ordered();
 							self.buffer.select_lines(e.line - s.line + 1);
 						}
@@ -929,7 +929,7 @@ impl CodeEditor {
 								.anchor
 								.col
 								.min(self.buffer.selection.head.col);
-							self.block_insert = Some((left_col, s.line, e.line));
+							self.vim.block_insert = Some((left_col, s.line, e.line));
 							self.buffer.selection =
 								Selection::caret(CursorPos::new(s.line, left_col));
 							self.enter_insert_mode();
@@ -946,7 +946,7 @@ impl CodeEditor {
 								.col
 								.max(self.buffer.selection.head.col)
 								+ 1;
-							self.block_insert = Some((right_col, s.line, e.line));
+							self.vim.block_insert = Some((right_col, s.line, e.line));
 							self.buffer.selection =
 								Selection::caret(CursorPos::new(s.line, right_col));
 							self.enter_insert_mode();
@@ -971,21 +971,21 @@ impl CodeEditor {
 								+ 1;
 							self.buffer
 								.block_delete(s.line, e.line, left_col, right_col);
-							self.vim_mode = VimMode::Normal;
+							self.vim.mode = VimMode::Normal;
 							self.update_status();
 							self.ensure_cursor_visible();
 							return Task::none();
 						}
 						"u" => {
 							self.buffer.transform_case(false);
-							self.vim_mode = VimMode::Normal;
+							self.vim.mode = VimMode::Normal;
 							self.update_status();
 							self.ensure_cursor_visible();
 							return Task::none();
 						}
 						"U" => {
 							self.buffer.transform_case(true);
-							self.vim_mode = VimMode::Normal;
+							self.vim.mode = VimMode::Normal;
 							self.update_status();
 							self.ensure_cursor_visible();
 							return Task::none();
@@ -1012,25 +1012,25 @@ impl CodeEditor {
 		use keyboard::key::Named;
 		match key {
 			Key::Named(Named::Escape) => {
-				self.vim_mode = VimMode::Normal;
-				self.vim_command.clear();
+				self.vim.mode = VimMode::Normal;
+				self.vim.command.clear();
 			}
 			Key::Named(Named::Enter) => {
 				self.execute_vim_command();
-				self.vim_mode = VimMode::Normal;
-				self.vim_command.clear();
+				self.vim.mode = VimMode::Normal;
+				self.vim.command.clear();
 			}
 			Key::Named(Named::Backspace) => {
-				if self.vim_command.pop().is_none() {
-					self.vim_mode = VimMode::Normal;
+				if self.vim.command.pop().is_none() {
+					self.vim.mode = VimMode::Normal;
 				}
 			}
 			Key::Named(Named::Space) => {
-				self.vim_command.push(' ');
+				self.vim.command.push(' ');
 			}
 			Key::Character(_) => {
 				if let Some(t) = text {
-					self.vim_command.push_str(&t);
+					self.vim.command.push_str(&t);
 				}
 			}
 			_ => {}
@@ -1040,7 +1040,7 @@ impl CodeEditor {
 	}
 
 	fn execute_vim_command(&mut self) {
-		let cmd = self.vim_command.trim().to_string();
+		let cmd = self.vim.command.trim().to_string();
 
 		if let Ok(n) = cmd.parse::<usize>() {
 			let line = n
@@ -1088,11 +1088,11 @@ impl CodeEditor {
 				let _ = self.exec_operator_motion('c', &motion, count);
 				// exec_operator_motion for 'c' leaves us in Insert mode;
 				// directly insert the saved text and return to Normal.
-				let text = self.last_insert_text.clone();
+				let text = self.vim.last_insert_text.clone();
 				for c in text.chars() {
 					self.buffer.insert_char(c);
 				}
-				self.vim_mode = VimMode::Normal;
+				self.vim.mode = VimMode::Normal;
 				Task::none()
 			}
 			NormalEdit::LineOp { op: 'd', count } => {
@@ -1110,7 +1110,7 @@ impl CodeEditor {
 				};
 				let _ = self.buffer.cut();
 				self.buffer.selection = Selection::caret(CursorPos::new(line, 0));
-				let text = self.last_insert_text.clone();
+				let text = self.vim.last_insert_text.clone();
 				for c in text.chars() {
 					self.buffer.insert_char(c);
 				}

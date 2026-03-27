@@ -6,7 +6,7 @@ use super::buffer::{Buffer, CursorPos, Selection, UndoConfig};
 use super::highlight::SyntaxLanguage;
 use super::theme::EditorTheme;
 use super::vim::{NormalEdit, VimMode};
-use super::widget::{EditorAction, SqlEditor};
+use super::widget::{EditorAction, EditorWidget};
 use super::{buffer, widget};
 
 // ─── Public message type ──────────────────────────────────────────────────────
@@ -33,18 +33,30 @@ pub enum EditorMsg {
 pub struct CodeEditor {
 	pub buffer: Buffer,
 	pub theme: EditorTheme,
+	pub view: EditorViewState,
+	pub chrome: EditorChromeState,
+	pub vim: VimState,
+	pointer: PointerState,
+}
+
+pub struct EditorViewState {
 	pub scroll_y: f32,
 	pub scroll_x: f32,
-	pub status: String,
 	pub show_minimap: bool,
 	pub show_whitespace: bool,
-	pub vim_mode: VimMode,
+	pub viewport_w: f32,
+	pub viewport_h: f32,
+}
 
-	pub(in crate::editor) viewport_w: f32,
-	pub(in crate::editor) viewport_h: f32,
-	pub(in crate::editor) vim_command: String,
+pub struct EditorChromeState {
+	pub status: String,
+}
+
+pub struct VimState {
+	pub mode: VimMode,
+	pub(in crate::editor) command: String,
+	pub(in crate::editor) count: String,
 	pub(in crate::editor) pending_g: bool,
-	pub(in crate::editor) vim_count: String,
 	pub(in crate::editor) pending_op: Option<char>,
 	/// Pending block insert: (insert_col, top_line, bottom_line)
 	pub(in crate::editor) block_insert: Option<(usize, usize, usize)>,
@@ -64,46 +76,60 @@ pub struct CodeEditor {
 	pub(in crate::editor) insert_enter_col: usize,
 	/// Cursor line when Insert mode was entered
 	pub(in crate::editor) insert_enter_line: usize,
+}
 
+struct PointerState {
 	is_dragging: bool,
 	click_count: u32,
+}
+
+fn default_undo_config() -> UndoConfig {
+	UndoConfig {
+		max_history: 1000,
+		group_timeout_ms: 600,
+	}
 }
 
 #[allow(dead_code)] // public API — used by the consuming application, not the demo
 impl CodeEditor {
 	/// Create a new editor with the given initial content and syntax language.
 	pub fn new(content: &str, language: SyntaxLanguage) -> Self {
-		let undo_cfg = UndoConfig {
-			max_history: 1000,
-			group_timeout_ms: 600,
-		};
+		let undo_cfg = default_undo_config();
 		let buffer = Buffer::with_undo_config(content, language, undo_cfg);
 		let mut ed = Self {
 			buffer,
 			theme: EditorTheme::dark(),
-			scroll_y: 0.0,
-			scroll_x: 0.0,
-			status: String::new(),
-			viewport_w: 0.0,
-			viewport_h: 0.0,
-			is_dragging: false,
-			click_count: 0,
-			show_minimap: true,
-			show_whitespace: true,
-			vim_mode: VimMode::Normal,
-			vim_command: String::new(),
-			pending_g: false,
-			vim_count: String::new(),
-			pending_op: None,
-			block_insert: None,
-			pending_find: None,
-			last_find: None,
-			pending_z: false,
-			pending_obj_prefix: None,
-			last_edit: None,
-			last_insert_text: String::new(),
-			insert_enter_col: 0,
-			insert_enter_line: 0,
+			view: EditorViewState {
+				scroll_y: 0.0,
+				scroll_x: 0.0,
+				show_minimap: true,
+				show_whitespace: true,
+				viewport_w: 0.0,
+				viewport_h: 0.0,
+			},
+			chrome: EditorChromeState {
+				status: String::new(),
+			},
+			vim: VimState {
+				mode: VimMode::Normal,
+				command: String::new(),
+				count: String::new(),
+				pending_g: false,
+				pending_op: None,
+				block_insert: None,
+				pending_find: None,
+				last_find: None,
+				pending_z: false,
+				pending_obj_prefix: None,
+				last_edit: None,
+				last_insert_text: String::new(),
+				insert_enter_col: 0,
+				insert_enter_line: 0,
+			},
+			pointer: PointerState {
+				is_dragging: false,
+				click_count: 0,
+			},
 		};
 		ed.update_status();
 		ed
@@ -117,31 +143,17 @@ impl CodeEditor {
 	/// Replace the buffer content (resets scroll and undo history).
 	pub fn set_content(&mut self, content: &str) {
 		let lang = self.buffer.language();
-		self.buffer = Buffer::with_undo_config(
-			content,
-			lang,
-			UndoConfig {
-				max_history: 1000,
-				group_timeout_ms: 600,
-			},
-		);
-		self.scroll_y = 0.0;
-		self.scroll_x = 0.0;
+		self.buffer = Buffer::with_undo_config(content, lang, default_undo_config());
+		self.view.scroll_y = 0.0;
+		self.view.scroll_x = 0.0;
 		self.update_status();
 	}
 
 	/// Replace content and switch language in one call.
 	pub fn set_content_with_language(&mut self, content: &str, language: SyntaxLanguage) {
-		self.buffer = Buffer::with_undo_config(
-			content,
-			language,
-			UndoConfig {
-				max_history: 1000,
-				group_timeout_ms: 600,
-			},
-		);
-		self.scroll_y = 0.0;
-		self.scroll_x = 0.0;
+		self.buffer = Buffer::with_undo_config(content, language, default_undo_config());
+		self.view.scroll_y = 0.0;
+		self.view.scroll_x = 0.0;
 		self.update_status();
 	}
 
@@ -154,7 +166,7 @@ impl CodeEditor {
 	/// Enable or disable vim modal editing. When disabled the editor behaves
 	/// like a conventional text editor (always in "insert" mode).
 	pub fn set_vim_enabled(&mut self, enabled: bool) {
-		self.vim_mode = if enabled {
+		self.vim.mode = if enabled {
 			VimMode::Normal
 		} else {
 			VimMode::Off
@@ -164,7 +176,7 @@ impl CodeEditor {
 
 	/// Returns `true` when vim modal editing is active.
 	pub fn vim_enabled(&self) -> bool {
-		self.vim_mode != VimMode::Off
+		self.vim.mode != VimMode::Off
 	}
 
 	/// Swap the active color theme.
@@ -175,8 +187,8 @@ impl CodeEditor {
 	/// Notify the editor of its viewport size (pixels). Call whenever the
 	/// containing pane is resized so cursor-scroll math stays accurate.
 	pub fn set_viewport(&mut self, w: f32, h: f32) {
-		self.viewport_w = w;
-		self.viewport_h = h;
+		self.view.viewport_w = w;
+		self.view.viewport_h = h;
 		if self.buffer.wrap_config.enabled {
 			self.update_wrap_col();
 		}
@@ -195,19 +207,20 @@ impl CodeEditor {
 
 	/// Recompute the wrap column from the current viewport width and apply it.
 	fn update_wrap_col(&mut self) {
-		if self.viewport_w < 1.0 {
+		if self.view.viewport_w < 1.0 {
 			return;
 		}
 		let gw = widget::gutter_width(self.buffer.line_count());
-		let mm = if self.show_minimap {
+		let mm = if self.view.show_minimap {
 			widget::minimap_width()
 		} else {
 			0.0
 		};
-		let usable = self.viewport_w - gw - widget::scrollbar_width() - mm - widget::left_pad();
+		let usable =
+			self.view.viewport_w - gw - widget::scrollbar_width() - mm - widget::left_pad();
 		let col = ((usable / widget::CHAR_W) as usize).max(20);
 		self.buffer.set_wrap_col(col);
-		self.scroll_x = 0.0;
+		self.view.scroll_x = 0.0;
 	}
 
 	// ─── iced integration ─────────────────────────────────────────────────────
@@ -256,28 +269,28 @@ impl CodeEditor {
 				let cursor_pos = self.pos_from_pixel(pos);
 				self.buffer.selection.anchor = cursor_pos;
 				self.buffer.selection.head = cursor_pos;
-				self.is_dragging = true;
-				self.click_count = 1;
+				self.pointer.is_dragging = true;
+				self.pointer.click_count = 1;
 				self.update_status();
 			}
 			EditorMsg::Action(EditorAction::DoubleClick(pos)) => {
 				let cursor_pos = self.pos_from_pixel(pos);
 				self.buffer.select_word_at(cursor_pos);
-				self.is_dragging = true;
-				self.click_count = 2;
+				self.pointer.is_dragging = true;
+				self.pointer.click_count = 2;
 				self.update_status();
 			}
 			EditorMsg::Action(_) => {}
 
 			EditorMsg::MouseMove(pos) => {
-				if self.is_dragging && self.click_count == 1 {
+				if self.pointer.is_dragging && self.pointer.click_count == 1 {
 					let target = self.pos_from_pixel(pos);
 					self.buffer.selection.head = target;
 					self.update_status();
 				}
 			}
 			EditorMsg::MouseUp => {
-				self.is_dragging = false;
+				self.pointer.is_dragging = false;
 			}
 
 			EditorMsg::Paste(text) => {
@@ -304,7 +317,7 @@ impl CodeEditor {
 			EditorMsg::VisualPaste(yank) => {
 				if !self.buffer.selection.is_caret() {
 					let (s, e) = self.buffer.selection.ordered();
-					let is_line = self.vim_mode == VimMode::VisualLine;
+					let is_line = self.vim.mode == VimMode::VisualLine;
 					let lcount = e.line - s.line + 1;
 					let replaced = if is_line {
 						let t = self.buffer.yank_lines(s.line, lcount);
@@ -318,7 +331,7 @@ impl CodeEditor {
 					}
 					self.buffer.clipboard = yank;
 					self.buffer.clipboard_is_line = false;
-					self.vim_mode = VimMode::Normal;
+					self.vim.mode = VimMode::Normal;
 					self.update_status();
 					self.ensure_cursor_visible();
 					if !replaced.is_empty() {
@@ -332,13 +345,13 @@ impl CodeEditor {
 				if mods.command() {
 					if let Key::Character(ref ch) = key {
 						if ch.as_str() == "\\" {
-							self.set_vim_enabled(self.vim_mode == VimMode::Off);
+							self.set_vim_enabled(self.vim.mode == VimMode::Off);
 							return Task::none();
 						}
 					}
 				}
 
-				match self.vim_mode {
+				match self.vim.mode {
 					VimMode::Command => return self.handle_vim_command_key(key, text),
 					VimMode::Normal => return self.handle_vim_normal_key(key, mods, text),
 					VimMode::Visual | VimMode::VisualLine => {
@@ -352,26 +365,28 @@ impl CodeEditor {
 
 				// Insert mode (vim enabled): Escape → Normal
 				if matches!(&key, Key::Named(keyboard::key::Named::Escape))
-					&& self.vim_mode == VimMode::Insert
+						&& self.vim.mode == VimMode::Insert
 					&& !self.buffer.search.is_open
 				{
 					let col_before = self.buffer.selection.head.col;
 					let line_before = self.buffer.selection.head.line;
 					// Capture inserted text for dot-repeat
-					if line_before == self.insert_enter_line && col_before > self.insert_enter_col {
-						self.last_insert_text = self
+					if line_before == self.vim.insert_enter_line
+						&& col_before > self.vim.insert_enter_col
+					{
+						self.vim.last_insert_text = self
 							.buffer
 							.line_text(line_before)
 							.chars()
-							.skip(self.insert_enter_col)
-							.take(col_before - self.insert_enter_col)
+							.skip(self.vim.insert_enter_col)
+							.take(col_before - self.vim.insert_enter_col)
 							.collect();
 					}
-					self.vim_mode = VimMode::Normal;
+					self.vim.mode = VimMode::Normal;
 					if col_before > 0 {
 						self.buffer.move_left(false);
 					}
-					if let Some((insert_col, top_line, bottom_line)) = self.block_insert.take() {
+					if let Some((insert_col, top_line, bottom_line)) = self.vim.block_insert.take() {
 						if col_before > insert_col && line_before == top_line {
 							let inserted: String = self
 								.buffer
@@ -447,10 +462,10 @@ impl CodeEditor {
 						self.set_wrap_enabled(enabled);
 					}
 					Key::Character(ref ch) if ctrl && ch.as_str() == "m" => {
-						self.show_minimap = !self.show_minimap;
+						self.view.show_minimap = !self.view.show_minimap;
 					}
 					Key::Character(ref ch) if ctrl && ch.as_str() == "l" => {
-						self.show_whitespace = !self.show_whitespace;
+						self.view.show_whitespace = !self.view.show_whitespace;
 					}
 					Key::Named(keyboard::key::Named::ArrowLeft) if ctrl => {
 						self.buffer.move_word_left(shift)
@@ -469,11 +484,11 @@ impl CodeEditor {
 					Key::Named(keyboard::key::Named::Home) => self.buffer.move_home(shift),
 					Key::Named(keyboard::key::Named::End) => self.buffer.move_end(shift),
 					Key::Named(keyboard::key::Named::PageUp) => {
-						let v = widget::visible_line_count(self.viewport_h);
+						let v = widget::visible_line_count(self.view.viewport_h);
 						self.buffer.page_up(v, shift);
 					}
 					Key::Named(keyboard::key::Named::PageDown) => {
-						let v = widget::visible_line_count(self.viewport_h);
+						let v = widget::visible_line_count(self.view.viewport_h);
 						self.buffer.page_down(v, shift);
 					}
 					Key::Named(keyboard::key::Named::Backspace) if ctrl => {
@@ -545,14 +560,14 @@ impl CodeEditor {
 				} else {
 					0.0
 				};
-				let eh = self.viewport_h - sp;
+				let eh = self.view.viewport_h - sp;
 				let vl_count = self.buffer.visual_lines.len();
 				let max_y = (vl_count as f32 * widget::line_height() + widget::top_pad() * 2.0
 					- eh)
 					.max(0.0);
-				self.scroll_y = (self.scroll_y + dy).clamp(0.0, max_y);
+				self.view.scroll_y = (self.view.scroll_y + dy).clamp(0.0, max_y);
 				if !self.buffer.wrap_config.enabled {
-					self.scroll_x = (self.scroll_x + dx).max(0.0);
+					self.view.scroll_x = (self.view.scroll_x + dx).max(0.0);
 				}
 			}
 		}
@@ -561,7 +576,7 @@ impl CodeEditor {
 
 	pub fn view(&self) -> Element<'_, EditorMsg> {
 		let visual_block =
-			if self.vim_mode == VimMode::VisualBlock && !self.buffer.selection.is_caret() {
+			if self.vim.mode == VimMode::VisualBlock && !self.buffer.selection.is_caret() {
 				let (s, e) = self.buffer.selection.ordered();
 				let left_col = self
 					.buffer
@@ -579,12 +594,12 @@ impl CodeEditor {
 			} else {
 				None
 			};
-		let editor = SqlEditor::new(&self.buffer, &self.theme, EditorMsg::Action)
-			.scroll_y(self.scroll_y)
-			.scroll_x(self.scroll_x)
-			.show_minimap(self.show_minimap)
-			.show_whitespace(self.show_whitespace)
-			.block_cursor(self.vim_mode == VimMode::Normal)
+		let editor = EditorWidget::new(&self.buffer, &self.theme, EditorMsg::Action)
+			.scroll_y(self.view.scroll_y)
+			.scroll_x(self.view.scroll_x)
+			.show_minimap(self.view.show_minimap)
+			.show_whitespace(self.view.show_whitespace)
+			.block_cursor(self.vim.mode == VimMode::Normal)
 			.visual_block(visual_block);
 
 		let sc = self.theme.statusbar_text;
@@ -598,7 +613,7 @@ impl CodeEditor {
 
 		let status_bar = container(
 			row![
-				text(&self.status).size(13).color(sc),
+				text(&self.chrome.status).size(13).color(sc),
 				Space::new().width(Length::Fill),
 				text(wrap_status).size(13).color(sc),
 				text("  ·  ").size(13).color(sep),
@@ -628,7 +643,7 @@ impl CodeEditor {
 		let cmd_bar = container(
 			row![
 				text(":").size(14).color(cmd_bar_color),
-				text(&self.vim_command).size(14).color(cmd_bar_color),
+				text(&self.vim.command).size(14).color(cmd_bar_color),
 				text("█")
 					.size(14)
 					.color(iced::Color { a: 0.7, ..cmd_bar_color }),
@@ -650,7 +665,7 @@ impl CodeEditor {
 		})
 		.width(Length::Fill);
 
-		if self.vim_mode == VimMode::Command {
+		if self.vim.mode == VimMode::Command {
 			column![
 				container(Element::from(editor))
 					.width(Length::Fill)
@@ -677,23 +692,23 @@ impl CodeEditor {
 		let bounds = iced::Rectangle {
 			x: 0.0,
 			y: 0.0,
-			width: self.viewport_w,
-			height: self.viewport_h,
+			width: self.view.viewport_w,
+			height: self.view.viewport_h,
 		};
 		widget::pixel_to_pos(
 			&self.buffer,
 			&bounds,
 			gw,
-			self.scroll_x,
-			self.scroll_y,
+			self.view.scroll_x,
+			self.view.scroll_y,
 			pixel.x,
 			pixel.y,
 		)
 	}
 
 	pub(in crate::editor) fn take_count(&mut self) -> usize {
-		let n = self.vim_count.parse::<usize>().unwrap_or(1).max(1);
-		self.vim_count.clear();
+		let n = self.vim.count.parse::<usize>().unwrap_or(1).max(1);
+		self.vim.count.clear();
 		n
 	}
 
@@ -721,7 +736,7 @@ impl CodeEditor {
 		} else {
 			String::new()
 		};
-		let mode = match self.vim_mode {
+		let mode = match self.vim.mode {
 			VimMode::Off => Some("OFF"),
 			VimMode::Normal => Some("NOR"),
 			VimMode::Insert => Some("INS"),
@@ -730,7 +745,7 @@ impl CodeEditor {
 			VimMode::VisualBlock => Some("V-BLOCK"),
 			VimMode::Command => Some("CMD"),
 		};
-		self.status = if let Some(m) = mode {
+		self.chrome.status = if let Some(m) = mode {
 			format!(
 				"{} | Ln {}, Col {}{}{} | {} diag",
 				m,
@@ -754,9 +769,9 @@ impl CodeEditor {
 
 	/// Record cursor position and enter Insert mode (for dot-repeat tracking).
 	pub(in crate::editor) fn enter_insert_mode(&mut self) {
-		self.insert_enter_col = self.buffer.selection.head.col;
-		self.insert_enter_line = self.buffer.selection.head.line;
-		self.vim_mode = VimMode::Insert;
+		self.vim.insert_enter_col = self.buffer.selection.head.col;
+		self.vim.insert_enter_line = self.buffer.selection.head.line;
+		self.vim.mode = VimMode::Insert;
 	}
 
 	/// Find char `target` in the f/F/t/T `kind` direction on current line.
@@ -823,11 +838,11 @@ impl CodeEditor {
 		let vl_idx = self.cursor_visual_line_idx();
 		let cy = vl_idx as f32 * widget::line_height();
 		let lh = widget::line_height();
-		self.scroll_y = match mode {
-			'z' => (cy - self.viewport_h / 2.0 + lh / 2.0).max(0.0),
+		self.view.scroll_y = match mode {
+			'z' => (cy - self.view.viewport_h / 2.0 + lh / 2.0).max(0.0),
 			't' => cy,
-			'b' => (cy - self.viewport_h + lh).max(0.0),
-			_ => self.scroll_y,
+			'b' => (cy - self.view.viewport_h + lh).max(0.0),
+			_ => self.view.scroll_y,
 		};
 	}
 
@@ -854,16 +869,16 @@ impl CodeEditor {
 		} else {
 			0.0
 		};
-		let vh = self.viewport_h - widget::top_pad() * 2.0 - sp;
+		let vh = self.view.viewport_h - widget::top_pad() * 2.0 - sp;
 		let vl_idx = self.cursor_visual_line_idx();
 		let cy = vl_idx as f32 * widget::line_height();
-		if cy < self.scroll_y {
-			self.scroll_y = cy;
-		} else if cy + widget::line_height() > self.scroll_y + vh {
-			self.scroll_y = cy + widget::line_height() - vh;
+		if cy < self.view.scroll_y {
+			self.view.scroll_y = cy;
+		} else if cy + widget::line_height() > self.view.scroll_y + vh {
+			self.view.scroll_y = cy + widget::line_height() - vh;
 		}
 		if self.buffer.wrap_config.enabled {
-			self.scroll_x = 0.0;
+			self.view.scroll_x = 0.0;
 			return;
 		}
 		let head = self.buffer.selection.head;
@@ -871,16 +886,16 @@ impl CodeEditor {
 		let vcol = buffer::visual_col_of(&hlt, head.col);
 		let cx = vcol as f32 * widget::CHAR_W;
 		let gw = widget::gutter_width(self.buffer.line_count());
-		let mm = if self.show_minimap {
+		let mm = if self.view.show_minimap {
 			widget::minimap_width()
 		} else {
 			0.0
 		};
-		let vw = self.viewport_w - gw - widget::scrollbar_width() - mm;
-		if cx < self.scroll_x {
-			self.scroll_x = cx;
-		} else if cx + widget::CHAR_W > self.scroll_x + vw {
-			self.scroll_x = cx + widget::CHAR_W - vw;
+		let vw = self.view.viewport_w - gw - widget::scrollbar_width() - mm;
+		if cx < self.view.scroll_x {
+			self.view.scroll_x = cx;
+		} else if cx + widget::CHAR_W > self.view.scroll_x + vw {
+			self.view.scroll_x = cx + widget::CHAR_W - vw;
 		}
 	}
 }

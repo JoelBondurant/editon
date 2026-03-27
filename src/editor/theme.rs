@@ -126,7 +126,7 @@ impl EditorTheme {
 			tooltip_text: Color::from_rgb8(217, 222, 230),
 
 			scrollbar_track: rgba(255, 255, 255, 0.02),
-			scrollbar_thumb: rgba(255, 255, 255, 0.10),
+			scrollbar_thumb: rgba(140, 0, 250, 0.5),
 			scrollbar_thumb_hover: rgba(255, 255, 255, 0.18),
 
 			search_match_bg: rgba(230, 191, 51, 0.30),
@@ -193,7 +193,7 @@ impl EditorTheme {
 			tooltip_text: Color::from_rgb8(38, 38, 51),
 
 			scrollbar_track: rgba(0, 0, 0, 0.02),
-			scrollbar_thumb: rgba(0, 0, 0, 0.12),
+			scrollbar_thumb: rgba(140, 0, 250, 0.5),
 			scrollbar_thumb_hover: rgba(0, 0, 0, 0.22),
 
 			search_match_bg: rgba(255, 217, 51, 0.30),

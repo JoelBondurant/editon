@@ -40,46 +40,46 @@ impl SearchState {
 			return;
 		}
 
-		let text = rope.to_string();
-		let (haystack, needle);
-		let text_lower;
-		let query_lower;
-
-		if self.case_sensitive {
-			haystack = text.as_str();
-			needle = self.query.as_str();
-		} else {
-			text_lower = text.to_lowercase();
-			query_lower = self.query.to_lowercase();
-			haystack = text_lower.as_str();
-			needle = query_lower.as_str();
+		let query_chars: Vec<char> = self.query.chars().collect();
+		let query_cmp: Vec<char> = query_chars
+			.iter()
+			.map(|&ch| fold_char(ch, self.case_sensitive))
+			.collect();
+		let query_len = query_chars.len();
+		if query_len == 0 {
+			return;
 		}
 
-		let mut byte_pos = 0;
-		while let Some(rel) = haystack[byte_pos..].find(needle) {
-			let match_byte_start = byte_pos + rel;
-			let match_byte_end = match_byte_start + self.query.len();
-
-			let char_start = rope.byte_to_char(match_byte_start);
-			let char_end = rope.byte_to_char(match_byte_end);
-			let line = rope.char_to_line(char_start);
+		for line in 0..rope.len_lines() {
 			let line_char_start = rope.line_to_char(line);
-			let col_start = char_start - line_char_start;
-			let col_end = if rope.char_to_line(char_end) == line {
-				char_end - line_char_start
-			} else {
-				col_start + self.query.len()
-			};
+			let line_text: String = rope
+				.line(line)
+				.chars()
+				.filter(|&ch| ch != '\n' && ch != '\r')
+				.collect();
+			let line_chars: Vec<char> = line_text.chars().collect();
+			let line_cmp: Vec<char> = line_chars
+				.iter()
+				.map(|&ch| fold_char(ch, self.case_sensitive))
+				.collect();
 
-			self.matches.push(SearchMatch {
-				line,
-				col_start,
-				col_end,
-				char_start,
-				char_end,
-			});
+			if line_cmp.len() < query_len {
+				continue;
+			}
 
-			byte_pos = match_byte_end;
+			for start in 0..=line_cmp.len() - query_len {
+				if line_cmp[start..start + query_len] == query_cmp[..] {
+					let char_start = line_char_start + start;
+					let char_end = char_start + query_len;
+					self.matches.push(SearchMatch {
+						line,
+						col_start: start,
+						col_end: start + query_len,
+						char_start,
+						char_end,
+					});
+				}
+			}
 		}
 
 		// Clamp current match
@@ -134,7 +134,8 @@ impl SearchState {
 		let m = self.matches.get(self.current_match)?.clone();
 		rope.remove(m.char_start..m.char_end);
 		rope.insert(m.char_start, &self.replacement);
-		let delta = self.replacement.len() as i64 - (m.char_end - m.char_start) as i64;
+		let delta =
+			self.replacement.chars().count() as i64 - (m.char_end - m.char_start) as i64;
 		Some(delta)
 	}
 
@@ -149,5 +150,13 @@ impl SearchState {
 		self.matches.clear();
 		self.current_match = 0;
 		count
+	}
+}
+
+fn fold_char(ch: char, case_sensitive: bool) -> char {
+	if case_sensitive {
+		ch
+	} else {
+		ch.to_lowercase().next().unwrap_or(ch)
 	}
 }

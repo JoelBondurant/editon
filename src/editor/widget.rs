@@ -54,7 +54,7 @@ pub enum EditorAction {
 
 // ─── Widget ───────────────────────────────────────────────────────────────────
 
-pub struct SqlEditor<'a, Message> {
+pub struct EditorWidget<'a, Message> {
 	buffer: &'a Buffer,
 	theme: &'a EditorTheme,
 	on_action: Box<dyn Fn(EditorAction) -> Message + 'a>,
@@ -67,7 +67,7 @@ pub struct SqlEditor<'a, Message> {
 	visual_block: Option<(usize, usize, usize, usize)>,
 }
 
-impl<'a, Message> SqlEditor<'a, Message> {
+impl<'a, Message> EditorWidget<'a, Message> {
 	pub fn new(
 		buffer: &'a Buffer,
 		theme: &'a EditorTheme,
@@ -189,7 +189,7 @@ impl Default for EditorState {
 
 // ─── Private draw helpers ─────────────────────────────────────────────────────
 
-impl<'a, Message> SqlEditor<'a, Message> {
+impl<'a, Message> EditorWidget<'a, Message> {
 	fn draw_background(&self, renderer: &mut Renderer, b: Rectangle, gw: f32) {
 		let th = self.theme;
 		fill(renderer, b, th.background);
@@ -341,10 +341,11 @@ impl<'a, Message> SqlEditor<'a, Message> {
 
 		// Search matches clipped to this visual line's byte range.
 		if self.buffer.search.is_open {
+			let line_len = lt.chars().count();
 			for (i, m) in self.buffer.search.matches.iter().enumerate() {
 				if m.line == li && m.col_start < vl.col_end && m.col_end > vl.col_start {
-					let ms = m.col_start.max(vl.col_start).min(lt.len());
-					let me = m.col_end.min(vl.col_end).min(lt.len());
+					let ms = m.col_start.max(vl.col_start).min(line_len);
+					let me = m.col_end.min(vl.col_end).min(line_len);
 					let mvs = buffer::visual_col_of(&lt, ms).saturating_sub(vl_vcol_off);
 					let mve = buffer::visual_col_of(&lt, me).saturating_sub(vl_vcol_off);
 					let mx = b.x + tx + (mvs as f32 * CHAR_W) - self.scroll_x;
@@ -370,11 +371,13 @@ impl<'a, Message> SqlEditor<'a, Message> {
 
 		if let Some((top, bottom, left_col, right_col)) = self.visual_block {
 			if li >= top && li <= bottom {
+				let line_len = lt.chars().count();
 				if left_col < vl.col_end && right_col + 1 > vl.col_start {
-					let vcs = buffer::visual_col_of(&lt, left_col.max(vl.col_start).min(lt.len()))
+					let vcs =
+						buffer::visual_col_of(&lt, left_col.max(vl.col_start).min(line_len))
 						.saturating_sub(vl_vcol_off);
 					let vce =
-						buffer::visual_col_of(&lt, (right_col + 1).min(vl.col_end).min(lt.len()))
+						buffer::visual_col_of(&lt, (right_col + 1).min(vl.col_end).min(line_len))
 							.saturating_sub(vl_vcol_off);
 					let sx = b.x + tx + (vcs as f32 * CHAR_W) - self.scroll_x;
 					let sw = ((vce - vcs) as f32 * CHAR_W).max(CHAR_W * 0.5);
@@ -393,18 +396,19 @@ impl<'a, Message> SqlEditor<'a, Message> {
 		} else if !self.buffer.selection.is_caret() {
 			let (ss, se) = self.buffer.selection.ordered();
 			if li >= ss.line && li <= se.line {
+				let line_len = lt.chars().count();
 				let raw_start = if li == ss.line { ss.col } else { 0 };
-				let raw_end = if li == se.line { se.col } else { lt.len() };
+				let raw_end = if li == se.line { se.col } else { line_len };
 
 				// Check that the selection overlaps this visual line's byte range.
 				if raw_start < vl.col_end && raw_end > vl.col_start {
-					let clip_start = raw_start.max(vl.col_start).min(lt.len());
-					let clip_end = raw_end.min(vl.col_end).min(lt.len());
+					let clip_start = raw_start.max(vl.col_start).min(line_len);
+					let clip_end = raw_end.min(vl.col_end).min(line_len);
 					let vcs = buffer::visual_col_of(&lt, clip_start).saturating_sub(vl_vcol_off);
 					// If the selection extends past the end of this VL (to next VL or next line),
 					// cover the full width of this VL; add +1 only when crossing a doc-line boundary.
 					let vce = if raw_end > vl.col_end {
-						let end_abs = buffer::visual_col_of(&lt, vl.col_end.min(lt.len()))
+						let end_abs = buffer::visual_col_of(&lt, vl.col_end.min(line_len))
 							.saturating_sub(vl_vcol_off);
 						end_abs + if li < se.line { 1 } else { 0 }
 					} else {
@@ -489,9 +493,12 @@ impl<'a, Message> SqlEditor<'a, Message> {
 	) {
 		let th = self.theme;
 		let lt = self.buffer.line_text(li);
+		let line_len = lt.chars().count();
 		let vl_vcol_off = buffer::visual_col_of(&lt, vl.col_start);
 		let render_start = vl.col_start;
-		let render_end = vl.col_end.min(lt.len());
+		let render_end = vl.col_end.min(line_len);
+		let render_start_byte = char_to_byte_idx(&lt, render_start);
+		let render_end_byte = char_to_byte_idx(&lt, render_end);
 		let lbs = self.buffer.rope.line_to_byte(li);
 		let lbe = lbs + lt.len();
 
@@ -501,8 +508,8 @@ impl<'a, Message> SqlEditor<'a, Message> {
 			if tok.byte_range.end <= lbs || tok.byte_range.start >= lbe {
 				continue;
 			}
-			let s = (tok.byte_range.start.max(lbs) - lbs).max(render_start);
-			let e = (tok.byte_range.end.min(lbe) - lbs).min(render_end);
+			let s = (tok.byte_range.start.max(lbs) - lbs).max(render_start_byte);
+			let e = (tok.byte_range.end.min(lbe) - lbs).min(render_end_byte);
 			if s >= e {
 				continue;
 			}
@@ -510,7 +517,7 @@ impl<'a, Message> SqlEditor<'a, Message> {
 		}
 		spans.sort_by_key(|s| s.0);
 		let mut render: Vec<(usize, usize, TokenKind)> = Vec::new();
-		let mut cur = render_start;
+		let mut cur = render_start_byte;
 		for &(s, e, k) in &spans {
 			if s > cur {
 				render.push((cur, s, TokenKind::Plain));
@@ -518,18 +525,18 @@ impl<'a, Message> SqlEditor<'a, Message> {
 			render.push((s, e, k));
 			cur = e;
 		}
-		if cur < render_end {
-			render.push((cur, render_end, TokenKind::Plain));
+		if cur < render_end_byte {
+			render.push((cur, render_end_byte, TokenKind::Plain));
 		}
 
 		let ws_color = Color {
 			a: 0.35,
 			..th.gutter_text
 		};
-		let trail_start = lt.trim_end().len();
+		let trail_start = lt.trim_end().chars().count();
 
 		for &(start, end, kind) in &render {
-			if start >= render_end {
+			if start >= render_end_byte {
 				break;
 			}
 			let sl = &lt[start..end.min(lt.len())];
@@ -537,11 +544,12 @@ impl<'a, Message> SqlEditor<'a, Message> {
 				continue;
 			}
 			let color = token_color(&kind, th);
+			let start_col = byte_to_char_idx(&lt, start);
 			// Use absolute visual col for tab-stop math; subtract vl_vcol_off for screen X.
-			let mut vcol = buffer::visual_col_of(&lt, start);
+			let mut vcol = buffer::visual_col_of(&lt, start_col);
 			let mut seg = String::new();
 			let mut seg_vcol = vcol;
-			let mut byte_pos = start;
+			let mut char_pos = start_col;
 			for ch in sl.chars() {
 				if ch == '\t' {
 					if !seg.is_empty() {
@@ -582,7 +590,7 @@ impl<'a, Message> SqlEditor<'a, Message> {
 						);
 						seg.clear();
 					}
-					let glyph = if byte_pos >= trail_start { "~" } else { "␣" };
+					let glyph = if char_pos >= trail_start { "~" } else { "␣" };
 					draw_text(
 						renderer,
 						glyph,
@@ -598,7 +606,7 @@ impl<'a, Message> SqlEditor<'a, Message> {
 					seg.push(ch);
 					vcol += 1;
 				}
-				byte_pos += ch.len_utf8();
+				char_pos += 1;
 			}
 			if !seg.is_empty() {
 				draw_text(
@@ -614,7 +622,7 @@ impl<'a, Message> SqlEditor<'a, Message> {
 		}
 
 		// EOL marker, fold indicator, and diagnostics only on the last visual line for this doc line.
-		let is_last_vl = vl.col_end >= lt.len();
+		let is_last_vl = vl.col_end >= line_len;
 		if is_last_vl {
 			if self.show_whitespace {
 				let eol_vcol = buffer::chars_with_vcols(&lt)
@@ -654,8 +662,8 @@ impl<'a, Message> SqlEditor<'a, Message> {
 
 		for diag in &self.buffer.diagnostics {
 			if diag.line == li && diag.col_start < vl.col_end && diag.col_end > vl.col_start {
-				let ds = diag.col_start.max(vl.col_start).min(lt.len());
-				let de = diag.col_end.min(render_end).min(lt.len());
+				let ds = diag.col_start.max(vl.col_start).min(line_len);
+				let de = diag.col_end.min(render_end).min(line_len);
 				if ds < de {
 					let uvs = buffer::visual_col_of(&lt, ds).saturating_sub(vl_vcol_off);
 					let uve = buffer::visual_col_of(&lt, de).saturating_sub(vl_vcol_off);
@@ -964,7 +972,7 @@ impl<'a, Message> SqlEditor<'a, Message> {
 
 // ─── Widget impl ──────────────────────────────────────────────────────────────
 
-impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Message> {
+impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for EditorWidget<'a, Message> {
 	fn tag(&self) -> widget::tree::Tag {
 		widget::tree::Tag::of::<EditorState>()
 	}
@@ -1012,28 +1020,37 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
 		{
 			self.draw_background(renderer, b, gw);
 
+			let vls = &self.buffer.visual_lines;
+			let first = (self.scroll_y / LINE_H).floor() as usize;
+			let last = (first + (editor_h / LINE_H).ceil() as usize + 2).min(vls.len());
+			let active = self.buffer.selection.head.line;
+
+			for vi in first..last {
+				if let Some(vl) = vls.get(vi) {
+					let y = b.y + TOP_PAD + (vi as f32 * LINE_H) - self.scroll_y;
+					if y + LINE_H < b.y || y > b.y + editor_h {
+						continue;
+					}
+					self.draw_line_gutter(renderer, b, gw, vl.doc_line, y, active, vl.is_first);
+				}
+			}
+
 			// Clip text content to the region left of the minimap/scrollbar.
 			let mm_x = self.minimap_x(&b);
 			let content_clip = Rectangle {
-				x: b.x,
+				x: b.x + gw,
 				y: b.y,
-				width: mm_x - b.x,
+				width: mm_x - (b.x + gw),
 				height: editor_h,
 			};
 			renderer.start_layer(content_clip);
 			{
-				let vls = &self.buffer.visual_lines;
-				let first = (self.scroll_y / LINE_H).floor() as usize;
-				let last = (first + (editor_h / LINE_H).ceil() as usize + 2).min(vls.len());
-				let active = self.buffer.selection.head.line;
-
 				for vi in first..last {
 					if let Some(vl) = vls.get(vi) {
 						let y = b.y + TOP_PAD + (vi as f32 * LINE_H) - self.scroll_y;
 						if y + LINE_H < b.y || y > b.y + editor_h {
 							continue;
 						}
-						self.draw_line_gutter(renderer, b, gw, vl.doc_line, y, active, vl.is_first);
 						self.draw_line_highlights(
 							renderer,
 							b,
@@ -1173,8 +1190,8 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for SqlEditor<'a, Mess
 	}
 }
 
-impl<'a, Message: Clone + 'a> From<SqlEditor<'a, Message>> for Element<'a, Message> {
-	fn from(e: SqlEditor<'a, Message>) -> Self {
+impl<'a, Message: Clone + 'a> From<EditorWidget<'a, Message>> for Element<'a, Message> {
+	fn from(e: EditorWidget<'a, Message>) -> Self {
 		Self::new(e)
 	}
 }
@@ -1231,6 +1248,18 @@ fn draw_text(r: &mut Renderer, content: &str, x: f32, y: f32, color: Color, max_
 			height: LINE_H,
 		},
 	);
+}
+
+fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
+	text.char_indices()
+		.nth(char_idx)
+		.map(|(idx, _)| idx)
+		.unwrap_or(text.len())
+}
+
+fn byte_to_char_idx(text: &str, byte_idx: usize) -> usize {
+	let clamped = byte_idx.min(text.len());
+	text[..clamped].chars().count()
 }
 
 fn token_color(kind: &TokenKind, th: &EditorTheme) -> Color {
