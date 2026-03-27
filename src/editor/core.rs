@@ -290,7 +290,7 @@ impl CodeEditor {
 			}
 			EditorMsg::Action(EditorAction::MouseDown(pos)) => {
 				let cursor_pos = self.pos_from_pixel(pos);
-				self.buffer.clear_secondary_carets();
+				self.buffer.clear_secondary_selections();
 				self.buffer.session.selection.anchor = cursor_pos;
 				self.buffer.session.selection.head = cursor_pos;
 				self.pointer.is_dragging = true;
@@ -299,13 +299,13 @@ impl CodeEditor {
 			}
 			EditorMsg::Action(EditorAction::AddCaret(pos)) => {
 				let cursor_pos = self.pos_from_pixel(pos);
-				self.buffer.add_caret(cursor_pos);
+				self.buffer.add_cursor(cursor_pos);
 				self.update_status();
 				return Task::none();
 			}
 			EditorMsg::Action(EditorAction::DoubleClick(pos)) => {
 				let cursor_pos = self.pos_from_pixel(pos);
-				self.buffer.clear_secondary_carets();
+				self.buffer.clear_secondary_selections();
 				self.buffer.select_word_at(cursor_pos);
 				self.pointer.is_dragging = true;
 				self.pointer.click_count = 2;
