@@ -130,7 +130,7 @@ pub mod document {
 	use ropey::Rope;
 	use tree_sitter::Point;
 
-	use super::{line, CursorPos};
+	use super::{CursorPos, line};
 
 	pub fn clamp_pos(rope: &Rope, p: CursorPos) -> CursorPos {
 		let line_count = rope.len_lines().max(1);

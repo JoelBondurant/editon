@@ -134,8 +134,7 @@ impl SearchState {
 		let m = self.matches.get(self.current_match)?.clone();
 		rope.remove(m.char_start..m.char_end);
 		rope.insert(m.char_start, &self.replacement);
-		let delta =
-			self.replacement.chars().count() as i64 - (m.char_end - m.char_start) as i64;
+		let delta = self.replacement.chars().count() as i64 - (m.char_end - m.char_start) as i64;
 		Some(delta)
 	}
 

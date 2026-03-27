@@ -8,7 +8,7 @@ use iced::mouse;
 use iced::{Color, Element, Event, Length, Pixels, Point, Rectangle, Renderer, Size, Theme};
 
 use super::buffer::{Buffer, TokenSpan};
-use super::coords::{line, CursorPos, TAB_WIDTH};
+use super::coords::{CursorPos, TAB_WIDTH, line};
 use super::highlight::TokenKind;
 use super::theme::EditorTheme;
 use super::wrap::VisualLine;
@@ -47,6 +47,7 @@ pub enum EditorAction {
 	CursorMoved,
 	MouseDown(iced::Point),
 	DoubleClick(iced::Point),
+	AddCaret(iced::Point),
 	/// Fired when the widget's pixel bounds change (e.g. window resize).
 	Resize(f32, f32),
 	/// Toggle the fold at the given document line.
@@ -129,29 +130,11 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			}
 	}
 
-	/// Find the index into `buffer.visual_lines` for the cursor position.
-	fn cursor_visual_line_idx(&self) -> usize {
-		let head = self.buffer.selection.head;
-		self.buffer
-			.visual_lines
-			.iter()
-			.position(|vl| {
-				vl.doc_line == head.line && vl.col_start <= head.col && head.col <= vl.col_end
-			})
-			.or_else(|| {
-				self.buffer
-					.visual_lines
-					.iter()
-					.position(|vl| vl.doc_line == head.line)
-			})
-			.unwrap_or(head.line)
-	}
-
 	fn pixel_to_pos(&self, bounds: &Rectangle, px: f32, py: f32) -> CursorPos {
 		let ry = py - bounds.y - TOP_PAD + self.scroll_y;
 		let vl_idx = ((ry / LINE_H).floor().max(0.0) as usize)
-			.min(self.buffer.visual_lines.len().saturating_sub(1));
-		if let Some(vl) = self.buffer.visual_lines.get(vl_idx) {
+			.min(self.buffer.document.visual_lines.len().saturating_sub(1));
+		if let Some(vl) = self.buffer.document.visual_lines.get(vl_idx) {
 			let lt = self.buffer.line_text(vl.doc_line);
 			let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
 			let rx = px - bounds.x - self.text_x() + self.scroll_x;
@@ -246,8 +229,8 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			nc,
 			gw,
 		);
-		if self.buffer.folds.is_foldable(li) {
-			let collapsed = self.buffer.folds.is_collapsed_start(li);
+		if self.buffer.document.folds.is_foldable(li) {
+			let collapsed = self.buffer.document.folds.is_collapsed_start(li);
 			draw_text(
 				renderer,
 				if collapsed { "▶" } else { "▼" },
@@ -257,7 +240,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				FOLD_COL_W,
 			);
 		}
-		if self.buffer.folds.is_collapsed_start(li) {
+		if self.buffer.document.folds.is_collapsed_start(li) {
 			fill(
 				renderer,
 				Rectangle {
@@ -269,7 +252,13 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				th.fold_collapsed_bg,
 			);
 		}
-		if self.buffer.diagnostics.iter().any(|d| d.line == li) {
+		if self
+			.buffer
+			.document
+			.diagnostics
+			.iter()
+			.any(|d| d.line == li)
+		{
 			fill_r(
 				renderer,
 				Rectangle {
@@ -341,9 +330,9 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		}
 
 		// Search matches clipped to this visual line's byte range.
-		if self.buffer.search.is_open {
+		if self.buffer.session.search.is_open {
 			let line_len = lt.chars().count();
-			for (i, m) in self.buffer.search.matches.iter().enumerate() {
+			for (i, m) in self.buffer.session.search.matches.iter().enumerate() {
 				if m.line == li && m.col_start < vl.col_end && m.col_end > vl.col_start {
 					let ms = m.col_start.max(vl.col_start).min(line_len);
 					let me = m.col_end.min(vl.col_end).min(line_len);
@@ -351,7 +340,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					let mve = line::visual_col_of(&lt, me).saturating_sub(vl_vcol_off);
 					let mx = b.x + tx + (mvs as f32 * CHAR_W) - self.scroll_x;
 					let mw = ((mve - mvs) as f32 * CHAR_W).max(CHAR_W);
-					let c = if i == self.buffer.search.current_match {
+					let c = if i == self.buffer.session.search.current_match {
 						th.search_current_bg
 					} else {
 						th.search_match_bg
@@ -374,8 +363,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			if li >= top && li <= bottom {
 				let line_len = lt.chars().count();
 				if left_col < vl.col_end && right_col + 1 > vl.col_start {
-					let vcs =
-						line::visual_col_of(&lt, left_col.max(vl.col_start).min(line_len))
+					let vcs = line::visual_col_of(&lt, left_col.max(vl.col_start).min(line_len))
 						.saturating_sub(vl_vcol_off);
 					let vce =
 						line::visual_col_of(&lt, (right_col + 1).min(vl.col_end).min(line_len))
@@ -394,20 +382,24 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					);
 				}
 			}
-		} else if !self.buffer.selection.is_caret() {
-			let (ss, se) = self.buffer.selection.ordered();
-			if li >= ss.line && li <= se.line {
+		} else {
+			for sel in std::iter::once(&self.buffer.session.selection)
+				.chain(self.buffer.secondary_selections().iter())
+			{
+				if sel.is_caret() {
+					continue;
+				}
+				let (ss, se) = sel.ordered();
+				if li < ss.line || li > se.line {
+					continue;
+				}
 				let line_len = lt.chars().count();
 				let raw_start = if li == ss.line { ss.col } else { 0 };
 				let raw_end = if li == se.line { se.col } else { line_len };
-
-				// Check that the selection overlaps this visual line's byte range.
 				if raw_start < vl.col_end && raw_end > vl.col_start {
 					let clip_start = raw_start.max(vl.col_start).min(line_len);
 					let clip_end = raw_end.min(vl.col_end).min(line_len);
 					let vcs = line::visual_col_of(&lt, clip_start).saturating_sub(vl_vcol_off);
-					// If the selection extends past the end of this VL (to next VL or next line),
-					// cover the full width of this VL; add +1 only when crossing a doc-line boundary.
 					let vce = if raw_end > vl.col_end {
 						let end_abs = line::visual_col_of(&lt, vl.col_end.min(line_len))
 							.saturating_sub(vl_vcol_off);
@@ -434,7 +426,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		}
 
 		// Bracket matching: only when bracket is within this visual line's byte range.
-		if let Some(ref bm) = self.buffer.matched_bracket {
+		if let Some(ref bm) = self.buffer.session.matched_bracket {
 			for &(bl, bc) in &[(bm.open_line, bm.open_col), (bm.close_line, bm.close_col)] {
 				if bl == li && bc >= vl.col_start && bc < vl.col_end {
 					let blt = self.buffer.line_text(bl);
@@ -631,8 +623,8 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					CHAR_W,
 				);
 			}
-			if self.buffer.folds.is_collapsed_start(li) {
-				let hc = self.buffer.folds.hidden_count(li);
+			if self.buffer.document.folds.is_collapsed_start(li) {
+				let hc = self.buffer.document.folds.hidden_count(li);
 				if hc > 0 {
 					let eol_vcol = line::chars_with_vcols(&lt)
 						.last()
@@ -650,7 +642,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			}
 		}
 
-		for diag in &self.buffer.diagnostics {
+		for diag in &self.buffer.document.diagnostics {
 			if diag.line == li && diag.col_start < vl.col_end && diag.col_end > vl.col_start {
 				let ds = diag.col_start.max(vl.col_start).min(line_len);
 				let de = diag.col_end.min(render_end).min(line_len);
@@ -694,24 +686,42 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			return;
 		}
 		let th = self.theme;
-		let head = self.buffer.selection.head;
-		let clt = self.buffer.line_text(head.line);
-		let cvcol_abs = line::visual_col_of(&clt, head.col);
+		let draw_one = |renderer: &mut Renderer, caret: CursorPos, primary: bool| {
+			let clt = self.buffer.line_text(caret.line);
+			let cvcol_abs = line::visual_col_of(&clt, caret.col);
+			let vl_idx = self
+				.buffer
+				.document
+				.visual_lines
+				.iter()
+				.position(|vl| {
+					vl.doc_line == caret.line
+						&& vl.col_start <= caret.col
+						&& caret.col <= vl.col_end
+				})
+				.or_else(|| {
+					self.buffer
+						.document
+						.visual_lines
+						.iter()
+						.position(|vl| vl.doc_line == caret.line)
+				})
+				.unwrap_or(caret.line);
+			let vl_vcol_off = self
+				.buffer
+				.document
+				.visual_lines
+				.get(vl_idx)
+				.map(|vl| line::visual_col_of(&clt, vl.col_start))
+				.unwrap_or(0);
 
-		// Find visual line index for cursor position.
-		let vl_idx = self.cursor_visual_line_idx();
-		let vl_vcol_off = self
-			.buffer
-			.visual_lines
-			.get(vl_idx)
-			.map(|vl| line::visual_col_of(&clt, vl.col_start))
-			.unwrap_or(0);
-
-		let cy = b.y + TOP_PAD + (vl_idx as f32 * LINE_H) - self.scroll_y;
-		let cx =
-			b.x + tx + ((cvcol_abs.saturating_sub(vl_vcol_off)) as f32 * CHAR_W) - self.scroll_x;
-		if cy > b.y - LINE_H && cy < b.y + editor_h {
-			if self.block_cursor {
+			let cy = b.y + TOP_PAD + (vl_idx as f32 * LINE_H) - self.scroll_y;
+			let cx = b.x + tx + ((cvcol_abs.saturating_sub(vl_vcol_off)) as f32 * CHAR_W)
+				- self.scroll_x;
+			if cy <= b.y - LINE_H || cy >= b.y + editor_h {
+				return;
+			}
+			if primary && self.block_cursor {
 				fill(
 					renderer,
 					Rectangle {
@@ -734,9 +744,21 @@ impl<'a, Message> EditorWidget<'a, Message> {
 						width: CURSOR_W,
 						height: LINE_H,
 					},
-					th.cursor,
+					if primary {
+						th.cursor
+					} else {
+						Color {
+							a: 0.75,
+							..th.cursor
+						}
+					},
 				);
 			}
+		};
+
+		draw_one(renderer, self.buffer.session.selection.head, true);
+		for sel in self.buffer.secondary_selections() {
+			draw_one(renderer, sel.head, false);
 		}
 	}
 
@@ -770,7 +792,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			);
 		}
 		for li in 0..self.buffer.line_count() {
-			if self.buffer.folds.is_hidden(li) {
+			if self.buffer.document.folds.is_hidden(li) {
 				continue;
 			}
 			let my = b.y + li as f32 * MINIMAP_LINE_H;
@@ -818,7 +840,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			},
 			th.scrollbar_track,
 		);
-		let total = self.buffer.visual_lines.len() as f32 * LINE_H + TOP_PAD * 2.0;
+		let total = self.buffer.document.visual_lines.len() as f32 * LINE_H + TOP_PAD * 2.0;
 		if total > editor_h {
 			let th_h = ((editor_h / total) * editor_h).max(24.0);
 			let th_y = b.y + (self.scroll_y / (total - editor_h)) * (editor_h - th_h);
@@ -860,12 +882,16 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			th.gutter_border,
 		);
 		let info = format!(
-            "Find: \"{}\"  {} of {}   Replace: \"{}\"   [Enter=next] [Shift+Enter=prev] [Ctrl+Shift+H=replace] [Ctrl+Shift+Enter=all]",
-            self.buffer.search.query,
-            if self.buffer.search.matches.is_empty() { 0 } else { self.buffer.search.current_match + 1 },
-            self.buffer.search.match_count(),
-            self.buffer.search.replacement,
-        );
+			"Find: \"{}\"  {} of {}   Replace: \"{}\"   [Enter=next] [Shift+Enter=prev] [Ctrl+Shift+H=replace] [Ctrl+Shift+Enter=all]",
+			self.buffer.session.search.query,
+			if self.buffer.session.search.matches.is_empty() {
+				0
+			} else {
+				self.buffer.session.search.current_match + 1
+			},
+			self.buffer.session.search.match_count(),
+			self.buffer.session.search.replacement,
+		);
 		draw_text(
 			renderer,
 			&info,
@@ -879,9 +905,10 @@ impl<'a, Message> EditorWidget<'a, Message> {
 	fn draw_tooltip(&self, renderer: &mut Renderer, b: Rectangle, tx: f32, st: &EditorState) {
 		let th = self.theme;
 		if let Some(di) = st.hover_diag {
-			if let Some(diag) = self.buffer.diagnostics.get(di) {
+			if let Some(diag) = self.buffer.document.diagnostics.get(di) {
 				let diag_vl_idx = self
 					.buffer
+					.document
 					.visual_lines
 					.iter()
 					.position(|vl| {
@@ -998,7 +1025,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for EditorWidget<'a, M
 		let gw = self.gutter_w();
 		let tx = self.text_x();
 		let editor_h = b.height
-			- if self.buffer.search.is_open {
+			- if self.buffer.session.search.is_open {
 				SEARCH_PANEL_H
 			} else {
 				0.0
@@ -1008,10 +1035,10 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for EditorWidget<'a, M
 		{
 			self.draw_background(renderer, b, gw);
 
-			let vls = &self.buffer.visual_lines;
+			let vls = &self.buffer.document.visual_lines;
 			let first = (self.scroll_y / LINE_H).floor() as usize;
 			let last = (first + (editor_h / LINE_H).ceil() as usize + 2).min(vls.len());
-			let active = self.buffer.selection.head.line;
+			let active = self.buffer.session.selection.head.line;
 
 			for vi in first..last {
 				if let Some(vl) = vls.get(vi) {
@@ -1063,7 +1090,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for EditorWidget<'a, M
 				self.draw_minimap(renderer, b, editor_h);
 			}
 			self.draw_scrollbar(renderer, b, editor_h);
-			if self.buffer.search.is_open {
+			if self.buffer.session.search.is_open {
 				self.draw_search_panel(renderer, b);
 			}
 		}
@@ -1100,10 +1127,10 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for EditorWidget<'a, M
 					if pos.x >= b.x + gw - FOLD_COL_W && pos.x <= b.x + gw {
 						let ry = pos.y - b.y - TOP_PAD + self.scroll_y;
 						let vl_idx = ((ry / LINE_H).floor().max(0.0) as usize)
-							.min(self.buffer.visual_lines.len().saturating_sub(1));
-						if let Some(vl) = self.buffer.visual_lines.get(vl_idx) {
+							.min(self.buffer.document.visual_lines.len().saturating_sub(1));
+						if let Some(vl) = self.buffer.document.visual_lines.get(vl_idx) {
 							let doc_line = vl.doc_line;
-							if self.buffer.folds.is_foldable(doc_line) {
+							if self.buffer.document.folds.is_foldable(doc_line) {
 								shell.publish((self.on_action)(EditorAction::ToggleFold(doc_line)));
 							}
 						}
@@ -1124,6 +1151,14 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for EditorWidget<'a, M
 					st.is_focused = false;
 				}
 			}
+			Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) => {
+				if let Some(pos) = cursor.position_over(b) {
+					st.is_focused = true;
+					shell.publish((self.on_action)(EditorAction::AddCaret(pos)));
+					shell.capture_event();
+					return;
+				}
+			}
 			Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
 				st.is_dragging = false;
 			}
@@ -1131,7 +1166,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for EditorWidget<'a, M
 				st.hover_diag = None;
 				if cursor.is_over(b) {
 					let hp = self.pixel_to_pos(&b, position.x, position.y);
-					for (i, d) in self.buffer.diagnostics.iter().enumerate() {
+					for (i, d) in self.buffer.document.diagnostics.iter().enumerate() {
 						if d.line == hp.line && hp.col >= d.col_start && hp.col < d.col_end {
 							st.hover_diag = Some(i);
 							break;
@@ -1269,9 +1304,9 @@ pub fn pixel_to_pos(
 	py: f32,
 ) -> CursorPos {
 	let ry = py - bounds.y - TOP_PAD + scroll_y;
-	let vl_idx =
-		((ry / LINE_H).floor().max(0.0) as usize).min(buf.visual_lines.len().saturating_sub(1));
-	if let Some(vl) = buf.visual_lines.get(vl_idx) {
+	let vl_idx = ((ry / LINE_H).floor().max(0.0) as usize)
+		.min(buf.document.visual_lines.len().saturating_sub(1));
+	if let Some(vl) = buf.document.visual_lines.get(vl_idx) {
 		let lt = buf.line_text(vl.doc_line);
 		let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
 		let rx = px - bounds.x - gutter_w - LEFT_PAD + scroll_x;

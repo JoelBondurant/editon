@@ -1,5 +1,5 @@
-use iced::keyboard::{self, Key};
 use iced::Task;
+use iced::keyboard::{self, Key};
 
 use super::coords::{CursorPos, Selection};
 use super::core::{CodeEditor, EditorMsg};
@@ -112,10 +112,10 @@ impl CodeEditor {
 
 		match key {
 			Key::Named(Named::Escape) => {
-				if self.buffer.search.is_open {
+				if self.buffer.session.search.is_open {
 					self.buffer.search_close();
 				}
-				self.buffer.selection.anchor = self.buffer.selection.head;
+				self.buffer.session.selection.anchor = self.buffer.session.selection.head;
 				self.vim.count.clear();
 				self.vim.pending_op = None;
 			}
@@ -150,7 +150,7 @@ impl CodeEditor {
 					match ch {
 						"f" | "F" => self.buffer.search_open(),
 						"w" | "W" => {
-							let e = !self.buffer.wrap_config.enabled;
+							let e = !self.buffer.document.wrap_config.enabled;
 							self.set_wrap_enabled(e);
 						}
 						"m" | "M" => self.view.show_minimap = !self.view.show_minimap,
@@ -158,7 +158,8 @@ impl CodeEditor {
 						"r" | "R" => self.buffer.redo(),
 						"v" | "V" => {
 							self.vim.mode = VimMode::VisualBlock;
-							self.buffer.selection.anchor = self.buffer.selection.head;
+							self.buffer.session.selection.anchor =
+								self.buffer.session.selection.head;
 						}
 						_ => {}
 					}
@@ -189,10 +190,10 @@ impl CodeEditor {
 					// Pending operator + motion/doubling
 					if let Some(op) = self.vim.pending_op.take() {
 						if (op == '>' && ch == ">") || (op == '<' && ch == "<") {
-							let line = self.buffer.selection.head.line;
+							let line = self.buffer.session.selection.head.line;
 							let last =
 								(line + count - 1).min(self.buffer.line_count().saturating_sub(1));
-							self.buffer.selection = Selection {
+							self.buffer.session.selection = Selection {
 								anchor: CursorPos::new(line, 0),
 								head: CursorPos::new(last, self.buffer.line_len(last)),
 							};
@@ -201,7 +202,8 @@ impl CodeEditor {
 							} else {
 								self.buffer.dedent_lines();
 							}
-							self.buffer.selection = Selection::caret(CursorPos::new(line, 0));
+							self.buffer.session.selection =
+								Selection::caret(CursorPos::new(line, 0));
 							self.update_status();
 							self.ensure_cursor_visible();
 							return Task::none();
@@ -225,7 +227,7 @@ impl CodeEditor {
 						}
 						let task = match (op, ch) {
 							('d', "d") => {
-								let line = self.buffer.selection.head.line;
+								let line = self.buffer.session.selection.head.line;
 								let yanked = self.buffer.yank_lines(line, count);
 								self.buffer.delete_lines(line, count);
 								self.vim.last_edit = Some(NormalEdit::LineOp { op: 'd', count });
@@ -234,20 +236,21 @@ impl CodeEditor {
 								iced::clipboard::write(yanked)
 							}
 							('y', "y") => {
-								let line = self.buffer.selection.head.line;
+								let line = self.buffer.session.selection.head.line;
 								let yanked = self.buffer.yank_lines(line, count);
 								self.update_status();
 								iced::clipboard::write(yanked)
 							}
 							('c', "c") => {
-								let line = self.buffer.selection.head.line;
+								let line = self.buffer.session.selection.head.line;
 								let len = self.buffer.line_len(line);
-								self.buffer.selection = Selection {
+								self.buffer.session.selection = Selection {
 									anchor: CursorPos::new(line, 0),
 									head: CursorPos::new(line, len),
 								};
 								let _ = self.buffer.cut();
-								self.buffer.selection = Selection::caret(CursorPos::new(line, 0));
+								self.buffer.session.selection =
+									Selection::caret(CursorPos::new(line, 0));
 								self.vim.last_edit = Some(NormalEdit::LineOp { op: 'c', count });
 								self.enter_insert_mode();
 								self.update_status();
@@ -289,7 +292,8 @@ impl CodeEditor {
 						}
 						"v" => {
 							self.vim.mode = VimMode::Visual;
-							self.buffer.selection.anchor = self.buffer.selection.head;
+							self.buffer.session.selection.anchor =
+								self.buffer.session.selection.head;
 						}
 						"V" => {
 							self.vim.mode = VimMode::VisualLine;
@@ -314,7 +318,7 @@ impl CodeEditor {
 						}
 						"~" => {
 							for _ in 0..count {
-								let pos = self.buffer.selection.head;
+								let pos = self.buffer.session.selection.head;
 								let lt = self.buffer.line_text(pos.line);
 								if let Some(c) = lt.chars().nth(pos.col) {
 									let toggled = if c.is_uppercase() {
@@ -460,8 +464,8 @@ impl CodeEditor {
 	// ─── Operator + motion engine ──────────────────────────────────────────────
 
 	fn exec_operator_motion(&mut self, op: char, motion: &str, count: usize) -> Task<EditorMsg> {
-		let origin = self.buffer.selection.head;
-		self.buffer.selection.anchor = origin;
+		let origin = self.buffer.session.selection.head;
+		self.buffer.session.selection.anchor = origin;
 
 		match motion {
 			"h" => {
@@ -515,7 +519,7 @@ impl CodeEditor {
 				while e < chars.len() && is_w(chars[e]) {
 					e += 1;
 				}
-				self.buffer.selection = Selection {
+				self.buffer.session.selection = Selection {
 					anchor: CursorPos::new(origin.line, s),
 					head: CursorPos::new(origin.line, e),
 				};
@@ -545,13 +549,13 @@ impl CodeEditor {
 						s -= 1;
 					}
 				}
-				self.buffer.selection = Selection {
+				self.buffer.session.selection = Selection {
 					anchor: CursorPos::new(origin.line, s),
 					head: CursorPos::new(origin.line, e),
 				};
 			}
 			_ => {
-				self.buffer.selection = Selection::caret(origin);
+				self.buffer.session.selection = Selection::caret(origin);
 				self.update_status();
 				return Task::none();
 			}
@@ -560,8 +564,9 @@ impl CodeEditor {
 		match op {
 			'd' => {
 				let yanked = self.buffer.cut();
-				self.buffer.selection = Selection::caret(self.buffer.selection.head);
-				self.buffer.clipboard_is_line = false;
+				self.buffer.session.selection =
+					Selection::caret(self.buffer.session.selection.head);
+				self.buffer.session.clipboard_is_line = false;
 				self.vim.last_edit = Some(NormalEdit::OperatorMotion {
 					op: 'd',
 					motion: motion.to_string(),
@@ -575,9 +580,9 @@ impl CodeEditor {
 			}
 			'y' => {
 				let yanked = self.buffer.copy();
-				let start = origin.min(self.buffer.selection.head);
-				self.buffer.selection = Selection::caret(start);
-				self.buffer.clipboard_is_line = false;
+				let start = origin.min(self.buffer.session.selection.head);
+				self.buffer.session.selection = Selection::caret(start);
+				self.buffer.session.clipboard_is_line = false;
 				self.update_status();
 				self.ensure_cursor_visible();
 				if !yanked.is_empty() {
@@ -586,7 +591,8 @@ impl CodeEditor {
 			}
 			'c' => {
 				let _ = self.buffer.cut();
-				self.buffer.selection = Selection::caret(self.buffer.selection.head);
+				self.buffer.session.selection =
+					Selection::caret(self.buffer.session.selection.head);
 				self.vim.last_edit = Some(NormalEdit::ChangeMotion {
 					motion: motion.to_string(),
 					count,
@@ -621,17 +627,17 @@ impl CodeEditor {
 					text.as_deref().unwrap_or(kc.as_str())
 				};
 				if ch == "w" {
-					let pos = self.buffer.selection.head;
+					let pos = self.buffer.session.selection.head;
 					self.buffer.select_word_at(pos);
 					if obj == 'a' {
 						let lt = self.buffer.line_text(pos.line);
 						let chars: Vec<char> = lt.chars().collect();
-						let (_, se) = self.buffer.selection.ordered();
+						let (_, se) = self.buffer.session.selection.ordered();
 						let mut e = se.col;
 						while e < chars.len() && chars[e].is_whitespace() {
 							e += 1;
 						}
-						self.buffer.selection.head = CursorPos::new(se.line, e);
+						self.buffer.session.selection.head = CursorPos::new(se.line, e);
 					}
 				}
 			}
@@ -654,7 +660,7 @@ impl CodeEditor {
 
 		match key {
 			Key::Named(Named::Escape) => {
-				self.buffer.selection.anchor = self.buffer.selection.head;
+				self.buffer.session.selection.anchor = self.buffer.session.selection.head;
 				self.vim.mode = VimMode::Normal;
 			}
 			Key::Named(Named::ArrowLeft) => self.buffer.move_left(true),
@@ -715,21 +721,24 @@ impl CodeEditor {
 						">" => {
 							self.buffer.indent_lines();
 							self.vim.mode = VimMode::Normal;
-							self.buffer.selection.anchor = self.buffer.selection.head;
+							self.buffer.session.selection.anchor =
+								self.buffer.session.selection.head;
 						}
 						"<" => {
 							self.buffer.dedent_lines();
 							self.vim.mode = VimMode::Normal;
-							self.buffer.selection.anchor = self.buffer.selection.head;
+							self.buffer.session.selection.anchor =
+								self.buffer.session.selection.head;
 						}
 						"y" => {
 							let yanked = if is_line {
-								let (s, e) = self.buffer.selection.ordered();
+								let (s, e) = self.buffer.session.selection.ordered();
 								self.buffer.yank_lines(s.line, e.line - s.line + 1)
 							} else {
 								self.buffer.copy()
 							};
-							self.buffer.selection.anchor = self.buffer.selection.head;
+							self.buffer.session.selection.anchor =
+								self.buffer.session.selection.head;
 							self.vim.mode = VimMode::Normal;
 							self.update_status();
 							self.ensure_cursor_visible();
@@ -740,7 +749,7 @@ impl CodeEditor {
 						}
 						"d" | "x" => {
 							let yanked = if is_line {
-								let (s, e) = self.buffer.selection.ordered();
+								let (s, e) = self.buffer.session.selection.ordered();
 								let lcount = e.line - s.line + 1;
 								let y = self.buffer.yank_lines(s.line, lcount);
 								self.buffer.delete_lines(s.line, lcount);
@@ -780,16 +789,18 @@ impl CodeEditor {
 								VimMode::Normal
 							};
 							if self.vim.mode == VimMode::Normal {
-								self.buffer.selection.anchor = self.buffer.selection.head;
+								self.buffer.session.selection.anchor =
+									self.buffer.session.selection.head;
 							}
 						}
 						"V" => {
 							if is_line {
 								self.vim.mode = VimMode::Normal;
-								self.buffer.selection.anchor = self.buffer.selection.head;
+								self.buffer.session.selection.anchor =
+									self.buffer.session.selection.head;
 							} else {
 								self.vim.mode = VimMode::VisualLine;
-								let (s, e) = self.buffer.selection.ordered();
+								let (s, e) = self.buffer.session.selection.ordered();
 								self.buffer.select_lines(e.line - s.line + 1);
 							}
 						}
@@ -816,13 +827,15 @@ impl CodeEditor {
 
 		// V-LINE: snap selection to whole lines
 		if self.vim.mode == VimMode::VisualLine {
-			let (s, e) = self.buffer.selection.ordered();
-			if self.buffer.selection.head >= self.buffer.selection.anchor {
-				self.buffer.selection.anchor = CursorPos::new(s.line, 0);
-				self.buffer.selection.head = CursorPos::new(e.line, self.buffer.line_len(e.line));
+			let (s, e) = self.buffer.session.selection.ordered();
+			if self.buffer.session.selection.head >= self.buffer.session.selection.anchor {
+				self.buffer.session.selection.anchor = CursorPos::new(s.line, 0);
+				self.buffer.session.selection.head =
+					CursorPos::new(e.line, self.buffer.line_len(e.line));
 			} else {
-				self.buffer.selection.head = CursorPos::new(s.line, 0);
-				self.buffer.selection.anchor = CursorPos::new(e.line, self.buffer.line_len(e.line));
+				self.buffer.session.selection.head = CursorPos::new(s.line, 0);
+				self.buffer.session.selection.anchor =
+					CursorPos::new(e.line, self.buffer.line_len(e.line));
 			}
 		}
 
@@ -856,7 +869,7 @@ impl CodeEditor {
 
 		match key {
 			Key::Named(Named::Escape) => {
-				self.buffer.selection.anchor = self.buffer.selection.head;
+				self.buffer.session.selection.anchor = self.buffer.session.selection.head;
 				self.vim.mode = VimMode::Normal;
 			}
 			Key::Named(Named::ArrowLeft) => self.buffer.move_left(true),
@@ -874,7 +887,8 @@ impl CodeEditor {
 					match ch {
 						"v" | "V" => {
 							// Ctrl+V again collapses back to Normal
-							self.buffer.selection.anchor = self.buffer.selection.head;
+							self.buffer.session.selection.anchor =
+								self.buffer.session.selection.head;
 							self.vim.mode = VimMode::Normal;
 						}
 						_ => {}
@@ -918,19 +932,20 @@ impl CodeEditor {
 						"v" => self.vim.mode = VimMode::Visual,
 						"V" => {
 							self.vim.mode = VimMode::VisualLine;
-							let (s, e) = self.buffer.selection.ordered();
+							let (s, e) = self.buffer.session.selection.ordered();
 							self.buffer.select_lines(e.line - s.line + 1);
 						}
 						"I" => {
-							let (s, e) = self.buffer.selection.ordered();
+							let (s, e) = self.buffer.session.selection.ordered();
 							let left_col = self
 								.buffer
+								.session
 								.selection
 								.anchor
 								.col
-								.min(self.buffer.selection.head.col);
+								.min(self.buffer.session.selection.head.col);
 							self.vim.block_insert = Some((left_col, s.line, e.line));
-							self.buffer.selection =
+							self.buffer.session.selection =
 								Selection::caret(CursorPos::new(s.line, left_col));
 							self.enter_insert_mode();
 							self.update_status();
@@ -938,16 +953,17 @@ impl CodeEditor {
 							return Task::none();
 						}
 						"A" => {
-							let (s, e) = self.buffer.selection.ordered();
+							let (s, e) = self.buffer.session.selection.ordered();
 							let right_col = self
 								.buffer
+								.session
 								.selection
 								.anchor
 								.col
-								.max(self.buffer.selection.head.col)
+								.max(self.buffer.session.selection.head.col)
 								+ 1;
 							self.vim.block_insert = Some((right_col, s.line, e.line));
-							self.buffer.selection =
+							self.buffer.session.selection =
 								Selection::caret(CursorPos::new(s.line, right_col));
 							self.enter_insert_mode();
 							self.update_status();
@@ -955,19 +971,21 @@ impl CodeEditor {
 							return Task::none();
 						}
 						"d" | "x" => {
-							let (s, e) = self.buffer.selection.ordered();
+							let (s, e) = self.buffer.session.selection.ordered();
 							let left_col = self
 								.buffer
+								.session
 								.selection
 								.anchor
 								.col
-								.min(self.buffer.selection.head.col);
+								.min(self.buffer.session.selection.head.col);
 							let right_col = self
 								.buffer
+								.session
 								.selection
 								.anchor
 								.col
-								.max(self.buffer.selection.head.col)
+								.max(self.buffer.session.selection.head.col)
 								+ 1;
 							self.buffer
 								.block_delete(s.line, e.line, left_col, right_col);
@@ -1046,15 +1064,15 @@ impl CodeEditor {
 			let line = n
 				.saturating_sub(1)
 				.min(self.buffer.line_count().saturating_sub(1));
-			self.buffer.selection.anchor = CursorPos { line, col: 0 };
-			self.buffer.selection.head = CursorPos { line, col: 0 };
+			self.buffer.session.selection.anchor = CursorPos { line, col: 0 };
+			self.buffer.session.selection.head = CursorPos { line, col: 0 };
 			self.ensure_cursor_visible();
 			return;
 		}
 
 		if let Some((first, last, pat, rep, global, icase)) = parse_substitute(
 			&cmd,
-			self.buffer.selection.head.line,
+			self.buffer.session.selection.head.line,
 			self.buffer.line_count().saturating_sub(1),
 		) {
 			let changed = self
@@ -1062,8 +1080,8 @@ impl CodeEditor {
 				.substitute(first, last, &pat, &rep, global, icase);
 			if changed > 0 {
 				let line = first.min(self.buffer.line_count().saturating_sub(1));
-				self.buffer.selection.anchor = CursorPos { line, col: 0 };
-				self.buffer.selection.head = CursorPos { line, col: 0 };
+				self.buffer.session.selection.anchor = CursorPos { line, col: 0 };
+				self.buffer.session.selection.head = CursorPos { line, col: 0 };
 				self.ensure_cursor_visible();
 			}
 			self.update_status();
@@ -1096,20 +1114,20 @@ impl CodeEditor {
 				Task::none()
 			}
 			NormalEdit::LineOp { op: 'd', count } => {
-				let line = self.buffer.selection.head.line;
+				let line = self.buffer.session.selection.head.line;
 				let yanked = self.buffer.yank_lines(line, count);
 				self.buffer.delete_lines(line, count);
 				iced::clipboard::write(yanked)
 			}
 			NormalEdit::LineOp { op: 'c', count: _ } => {
-				let line = self.buffer.selection.head.line;
+				let line = self.buffer.session.selection.head.line;
 				let len = self.buffer.line_len(line);
-				self.buffer.selection = Selection {
+				self.buffer.session.selection = Selection {
 					anchor: CursorPos::new(line, 0),
 					head: CursorPos::new(line, len),
 				};
 				let _ = self.buffer.cut();
-				self.buffer.selection = Selection::caret(CursorPos::new(line, 0));
+				self.buffer.session.selection = Selection::caret(CursorPos::new(line, 0));
 				let text = self.vim.last_insert_text.clone();
 				for c in text.chars() {
 					self.buffer.insert_char(c);
@@ -1131,7 +1149,7 @@ impl CodeEditor {
 			}
 			NormalEdit::ToggleCase { count } => {
 				for _ in 0..count {
-					let pos = self.buffer.selection.head;
+					let pos = self.buffer.session.selection.head;
 					let lt = self.buffer.line_text(pos.line);
 					if let Some(c) = lt.chars().nth(pos.col) {
 						let toggled = if c.is_uppercase() {

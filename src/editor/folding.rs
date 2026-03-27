@@ -21,8 +21,8 @@ pub enum FoldKind {
 
 /// Top-level SQL keywords that begin a foldable statement.
 const SQL_STATEMENT_KEYWORDS: &[&str] = &[
-	"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
-	"WITH", "MERGE", "TRUNCATE", "GRANT", "REVOKE", "EXPLAIN",
+	"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "WITH", "MERGE", "TRUNCATE",
+	"GRANT", "REVOKE", "EXPLAIN",
 ];
 
 /// Manages fold state for the editor.
@@ -148,7 +148,11 @@ impl FoldState {
 		}
 	}
 
-	fn detect_indent_folds(&mut self, line_count: usize, line_text: &mut dyn FnMut(usize) -> String) {
+	fn detect_indent_folds(
+		&mut self,
+		line_count: usize,
+		line_text: &mut dyn FnMut(usize) -> String,
+	) {
 		let mut i = 0;
 		while i < line_count {
 			let text = line_text(i);
@@ -217,6 +221,12 @@ impl FoldState {
 	/// Number of hidden lines in a collapsed region starting at `line`.
 	pub fn hidden_count(&self, line: usize) -> usize {
 		self.collapsed.get(&line).map(|end| end - line).unwrap_or(0)
+	}
+
+	pub fn apply_regions(&mut self, regions: BTreeMap<usize, FoldRegion>) {
+		self.regions = regions;
+		self.collapsed
+			.retain(|start, _| self.regions.contains_key(start));
 	}
 
 	/// Map a visible line index to an actual document line, accounting for folds.

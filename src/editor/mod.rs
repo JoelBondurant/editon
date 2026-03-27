@@ -2,6 +2,7 @@
 /// so the editor's whitespace glyphs (▸ ␣ ¬) render correctly.
 pub const DEJAVU_SANS_MONO: &[u8] = include_bytes!("../../fonts/DejaVuSansMono.ttf");
 
+pub mod analysis;
 pub mod buffer;
 pub mod coords;
 pub mod folding;

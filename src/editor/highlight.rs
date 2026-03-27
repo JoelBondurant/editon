@@ -29,7 +29,7 @@ pub struct SyntaxToken {
 
 // ─── Supported languages ──────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SyntaxLanguage {
 	Sql,
 	Rust,

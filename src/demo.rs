@@ -2,7 +2,7 @@ use iced::keyboard::{self, Key};
 use iced::{Element, Subscription, Task, Theme};
 
 use crate::editor::highlight::SyntaxLanguage;
-use crate::editor::{CodeEditor, EditorMsg, DEJAVU_SANS_MONO};
+use crate::editor::{CodeEditor, DEJAVU_SANS_MONO, EditorMsg};
 
 const SAMPLE_SQL: &str = r#"-- SQL + Rust polyglot editor demo
 -- A really long comment line to test line wrapping on really long lines like this one which is really long and otherwise pointless.
