@@ -222,7 +222,7 @@ impl CodeEditor {
 		};
 		let usable =
 			self.view.viewport_w - gw - widget::scrollbar_width() - mm - widget::left_pad();
-		let col = ((usable / widget::CHAR_W) as usize).max(20);
+		let col = ((usable / widget::char_width()) as usize).max(20);
 		self.buffer.set_wrap_col(col);
 		self.view.scroll_x = 0.0;
 	}
@@ -939,7 +939,8 @@ impl CodeEditor {
 		let head = self.buffer.session.selection.head;
 		let hlt = self.buffer.line_text(head.line);
 		let vcol = line::visual_col_of(&hlt, head.col);
-		let cx = vcol as f32 * widget::CHAR_W;
+		let char_w = widget::char_width();
+		let cx = vcol as f32 * char_w;
 		let gw = widget::gutter_width(self.buffer.line_count());
 		let mm = if self.view.show_minimap {
 			widget::minimap_width()
@@ -949,8 +950,8 @@ impl CodeEditor {
 		let vw = self.view.viewport_w - gw - widget::scrollbar_width() - mm;
 		if cx < self.view.scroll_x {
 			self.view.scroll_x = cx;
-		} else if cx + widget::CHAR_W > self.view.scroll_x + vw {
-			self.view.scroll_x = cx + widget::CHAR_W - vw;
+		} else if cx + char_w > self.view.scroll_x + vw {
+			self.view.scroll_x = cx + char_w - vw;
 		}
 	}
 }

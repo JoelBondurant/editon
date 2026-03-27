@@ -1,6 +1,6 @@
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer;
-use iced::advanced::text::Renderer as TextRenderer;
+use iced::advanced::text::{Paragraph, Renderer as TextRenderer};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{Clipboard, Renderer as _, Shell};
 use iced::keyboard;
@@ -115,7 +115,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 
 	fn gutter_w(&self) -> f32 {
 		let d = format!("{}", self.buffer.line_count()).len().max(3) as f32;
-		d * CHAR_W + GUTTER_PAD * 2.0 + FOLD_COL_W
+		d * char_width() + GUTTER_PAD * 2.0 + FOLD_COL_W
 	}
 
 	fn text_x(&self) -> f32 {
@@ -137,8 +137,9 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		if let Some(vl) = self.buffer.document.visual_lines.get(vl_idx) {
 			let lt = self.buffer.line_text(vl.doc_line);
 			let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
+			let char_w = char_width();
 			let rx = px - bounds.x - self.text_x() + self.scroll_x;
-			let vcol = (rx / CHAR_W).round().max(0.0) as usize + vl_vcol_off;
+			let vcol = (rx / char_w).round().max(0.0) as usize + vl_vcol_off;
 			let logical = line::logical_col_of(&lt, vcol);
 			self.buffer.click_to_pos(vl.doc_line, logical)
 		} else {
@@ -215,6 +216,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			return;
 		}
 		let th = self.theme;
+		let char_w = char_width();
 		let num = format!("{}", li + 1);
 		let nc = if li == active {
 			th.gutter_active_text
@@ -224,7 +226,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		draw_text(
 			renderer,
 			&num,
-			b.x + gw - FOLD_COL_W - GUTTER_PAD - (num.len() as f32 * CHAR_W),
+			b.x + gw - FOLD_COL_W - GUTTER_PAD - (num.len() as f32 * char_w),
 			y,
 			nc,
 			gw,
@@ -286,6 +288,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		vl: &VisualLine,
 	) {
 		let th = self.theme;
+		let char_w = char_width();
 		let lt = self.buffer.line_text(li);
 		// Visual column offset of the start of this visual line within the doc line.
 		let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
@@ -309,7 +312,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			for &vcol in &self.buffer.indent_guides(li) {
 				let guide_abs = vcol.saturating_sub(TAB_WIDTH);
 				if guide_abs >= vl_vcol_off {
-					let gx = b.x + tx + ((guide_abs - vl_vcol_off) as f32 * CHAR_W) - self.scroll_x;
+					let gx = b.x + tx + ((guide_abs - vl_vcol_off) as f32 * char_w) - self.scroll_x;
 					let c = if li == active {
 						th.indent_guide_active
 					} else {
@@ -338,8 +341,8 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					let me = m.col_end.min(vl.col_end).min(line_len);
 					let mvs = line::visual_col_of(&lt, ms).saturating_sub(vl_vcol_off);
 					let mve = line::visual_col_of(&lt, me).saturating_sub(vl_vcol_off);
-					let mx = b.x + tx + (mvs as f32 * CHAR_W) - self.scroll_x;
-					let mw = ((mve - mvs) as f32 * CHAR_W).max(CHAR_W);
+					let mx = b.x + tx + (mvs as f32 * char_w) - self.scroll_x;
+					let mw = ((mve - mvs) as f32 * char_w).max(char_w);
 					let c = if i == self.buffer.session.search.current_match {
 						th.search_current_bg
 					} else {
@@ -368,8 +371,8 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					let vce =
 						line::visual_col_of(&lt, (right_col + 1).min(vl.col_end).min(line_len))
 							.saturating_sub(vl_vcol_off);
-					let sx = b.x + tx + (vcs as f32 * CHAR_W) - self.scroll_x;
-					let sw = ((vce - vcs) as f32 * CHAR_W).max(CHAR_W * 0.5);
+					let sx = b.x + tx + (vcs as f32 * char_w) - self.scroll_x;
+					let sw = ((vce - vcs) as f32 * char_w).max(char_w * 0.5);
 					fill(
 						renderer,
 						Rectangle {
@@ -408,8 +411,8 @@ impl<'a, Message> EditorWidget<'a, Message> {
 						line::visual_col_of(&lt, clip_end).saturating_sub(vl_vcol_off)
 					};
 					if vce > vcs {
-						let sx = b.x + tx + (vcs as f32 * CHAR_W) - self.scroll_x;
-						let sw = ((vce - vcs) as f32 * CHAR_W).max(CHAR_W * 0.5);
+						let sx = b.x + tx + (vcs as f32 * char_w) - self.scroll_x;
+						let sw = ((vce - vcs) as f32 * char_w).max(char_w * 0.5);
 						fill(
 							renderer,
 							Rectangle {
@@ -431,13 +434,13 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				if bl == li && bc >= vl.col_start && bc < vl.col_end {
 					let blt = self.buffer.line_text(bl);
 					let bvcol = line::visual_col_of(&blt, bc).saturating_sub(vl_vcol_off);
-					let bx = b.x + tx + (bvcol as f32 * CHAR_W) - self.scroll_x;
+					let bx = b.x + tx + (bvcol as f32 * char_w) - self.scroll_x;
 					fill(
 						renderer,
 						Rectangle {
 							x: bx,
 							y,
-							width: CHAR_W,
+							width: char_w,
 							height: LINE_H,
 						},
 						th.bracket_match_bg,
@@ -446,13 +449,13 @@ impl<'a, Message> EditorWidget<'a, Message> {
 						Rectangle {
 							x: bx,
 							y,
-							width: CHAR_W,
+							width: char_w,
 							height: BRACKET_BW,
 						},
 						Rectangle {
 							x: bx,
 							y: y + LINE_H - BRACKET_BW,
-							width: CHAR_W,
+							width: char_w,
 							height: BRACKET_BW,
 						},
 						Rectangle {
@@ -462,7 +465,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 							height: LINE_H,
 						},
 						Rectangle {
-							x: bx + CHAR_W - BRACKET_BW,
+							x: bx + char_w - BRACKET_BW,
 							y,
 							width: BRACKET_BW,
 							height: LINE_H,
@@ -485,6 +488,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		vl: &VisualLine,
 	) {
 		let th = self.theme;
+		let char_w = char_width();
 		let lt = self.buffer.line_text(li);
 		let line_len = lt.chars().count();
 		let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
@@ -538,7 +542,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 						draw_text(
 							renderer,
 							&seg,
-							b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W)
+							b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
 								- self.scroll_x,
 							y,
 							color,
@@ -550,11 +554,11 @@ impl<'a, Message> EditorWidget<'a, Message> {
 						draw_text(
 							renderer,
 							"▸",
-							b.x + tx + ((vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W)
+							b.x + tx + ((vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
 								- self.scroll_x,
 							y,
 							ws_color,
-							CHAR_W,
+							char_w,
 						);
 					}
 					vcol = (vcol / TAB_WIDTH + 1) * TAB_WIDTH;
@@ -564,7 +568,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 						draw_text(
 							renderer,
 							&seg,
-							b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W)
+							b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
 								- self.scroll_x,
 							y,
 							color,
@@ -576,11 +580,11 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					draw_text(
 						renderer,
 						glyph,
-						b.x + tx + ((vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W)
+						b.x + tx + ((vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
 							- self.scroll_x,
 						y,
 						ws_color,
-						CHAR_W,
+						char_w,
 					);
 					vcol += 1;
 					seg_vcol = vcol;
@@ -594,7 +598,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				draw_text(
 					renderer,
 					&seg,
-					b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W)
+					b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
 						- self.scroll_x,
 					y,
 					color,
@@ -613,14 +617,14 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				draw_text(
 					renderer,
 					"¬",
-					b.x + tx + ((eol_vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W)
+					b.x + tx + ((eol_vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
 						- self.scroll_x,
 					y,
 					Color {
 						a: 0.18,
 						..th.gutter_text
 					},
-					CHAR_W,
+					char_w,
 				);
 			}
 			if self.buffer.document.folds.is_collapsed_start(li) {
@@ -632,7 +636,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					draw_text(
 						renderer,
 						&format!(" ⋯ {} lines", hc),
-						b.x + tx + ((eol_vcol.saturating_sub(vl_vcol_off)) as f32 * CHAR_W) + 8.0
+						b.x + tx + ((eol_vcol.saturating_sub(vl_vcol_off)) as f32 * char_w) + 8.0
 							- self.scroll_x,
 						y,
 						th.comment,
@@ -649,8 +653,8 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				if ds < de {
 					let uvs = line::visual_col_of(&lt, ds).saturating_sub(vl_vcol_off);
 					let uve = line::visual_col_of(&lt, de).saturating_sub(vl_vcol_off);
-					let ux = b.x + tx + (uvs as f32 * CHAR_W) - self.scroll_x;
-					let uw = ((uve - uvs) as f32 * CHAR_W).max(CHAR_W);
+					let ux = b.x + tx + (uvs as f32 * char_w) - self.scroll_x;
+					let uw = ((uve - uvs) as f32 * char_w).max(char_w);
 					let uy = y + LINE_H - ERR_THICK - 1.0;
 					let seg: f32 = 4.0;
 					let mut sx = ux;
@@ -686,6 +690,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			return;
 		}
 		let th = self.theme;
+		let char_w = char_width();
 		let draw_one = |renderer: &mut Renderer, caret: CursorPos, primary: bool| {
 			let clt = self.buffer.line_text(caret.line);
 			let cvcol_abs = line::visual_col_of(&clt, caret.col);
@@ -716,7 +721,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				.unwrap_or(0);
 
 			let cy = b.y + TOP_PAD + (vl_idx as f32 * LINE_H) - self.scroll_y;
-			let cx = b.x + tx + ((cvcol_abs.saturating_sub(vl_vcol_off)) as f32 * CHAR_W)
+			let cx = b.x + tx + ((cvcol_abs.saturating_sub(vl_vcol_off)) as f32 * char_w)
 				- self.scroll_x;
 			if cy <= b.y - LINE_H || cy >= b.y + editor_h {
 				return;
@@ -727,7 +732,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					Rectangle {
 						x: cx,
 						y: cy,
-						width: CHAR_W,
+						width: char_w,
 						height: LINE_H,
 					},
 					Color {
@@ -904,6 +909,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 
 	fn draw_tooltip(&self, renderer: &mut Renderer, b: Rectangle, tx: f32, st: &EditorState) {
 		let th = self.theme;
+		let char_w = char_width();
 		if let Some(di) = st.hover_diag {
 			if let Some(diag) = self.buffer.document.diagnostics.get(di) {
 				let diag_vl_idx = self
@@ -919,8 +925,8 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					.unwrap_or(diag.line);
 				let dy =
 					b.y + TOP_PAD + (diag_vl_idx as f32 * LINE_H) - self.scroll_y + LINE_H + 4.0;
-				let dx = b.x + tx + (diag.col_start as f32 * CHAR_W) - self.scroll_x;
-				let tw = (diag.message.len() as f32 * CHAR_W * 0.62)
+				let dx = b.x + tx + (diag.col_start as f32 * char_w) - self.scroll_x;
+				let tw = (diag.message.len() as f32 * char_w * 0.62)
 					.min(400.0)
 					.max(150.0);
 				let th2 = 28.0;
@@ -1309,8 +1315,9 @@ pub fn pixel_to_pos(
 	if let Some(vl) = buf.document.visual_lines.get(vl_idx) {
 		let lt = buf.line_text(vl.doc_line);
 		let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
+		let char_w = char_width();
 		let rx = px - bounds.x - gutter_w - LEFT_PAD + scroll_x;
-		let vcol = (rx / CHAR_W).round().max(0.0) as usize + vl_vcol_off;
+		let vcol = (rx / char_w).round().max(0.0) as usize + vl_vcol_off;
 		let logical = line::logical_col_of(&lt, vcol);
 		buf.click_to_pos(vl.doc_line, logical)
 	} else {
@@ -1318,8 +1325,33 @@ pub fn pixel_to_pos(
 	}
 }
 
+fn measure_text_width(content: &str) -> f32 {
+	let text = iced::advanced::text::Text {
+		content,
+		bounds: Size::new(f32::INFINITY, f32::INFINITY),
+		size: Pixels(FONT_SZ),
+		line_height: iced::advanced::text::LineHeight::Relative(1.0),
+		font: EDITOR_FONT,
+		align_x: iced::advanced::text::Alignment::Left,
+		align_y: iced::alignment::Vertical::Top,
+		shaping: iced::advanced::text::Shaping::Basic,
+		wrapping: iced::advanced::text::Wrapping::None,
+	};
+
+	<Renderer as TextRenderer>::Paragraph::with_text(text).min_width()
+}
+
+pub fn char_width() -> f32 {
+	let width = measure_text_width("0");
+	if width.is_finite() && width > 0.0 {
+		width
+	} else {
+		CHAR_W
+	}
+}
+
 pub fn gutter_width(line_count: usize) -> f32 {
-	format!("{}", line_count).len().max(3) as f32 * CHAR_W + GUTTER_PAD * 2.0 + FOLD_COL_W
+	format!("{}", line_count).len().max(3) as f32 * char_width() + GUTTER_PAD * 2.0 + FOLD_COL_W
 }
 
 pub fn visible_line_count(h: f32) -> usize {
