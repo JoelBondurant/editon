@@ -587,8 +587,8 @@ impl CodeEditor {
 			.block_cursor(self.vim_mode == VimMode::Normal)
 			.visual_block(visual_block);
 
-		let sc = iced::Color::from_rgb(0.55, 0.58, 0.62);
-		let sep = iced::Color::from_rgb(0.35, 0.37, 0.40);
+		let sc = self.theme.statusbar_text;
+		let sep = self.theme.statusbar_sep;
 		let lang = self.buffer.language().display_name();
 		let wrap_status = if self.buffer.wrap_config.enabled {
 			"Wrap:On"
@@ -613,24 +613,25 @@ impl CodeEditor {
 			.padding(6)
 			.spacing(4),
 		)
-		.style(|_: &Theme| container::Style {
-			background: Some(iced::Background::Color(iced::Color::from_rgb(
-				0.09, 0.10, 0.12,
-			))),
-			..Default::default()
+		.style({
+			let bg = self.theme.statusbar_bg;
+			move |_: &Theme| container::Style {
+				background: Some(iced::Background::Color(bg)),
+				..Default::default()
+			}
 		})
 		.width(Length::Fill)
 		.height(Length::Fixed(29.0))
 		.clip(true);
 
-		let cmd_bar_color = iced::Color::from_rgb(0.90, 0.92, 0.95);
+		let cmd_bar_color = self.theme.cmdbar_text;
 		let cmd_bar = container(
 			row![
 				text(":").size(14).color(cmd_bar_color),
 				text(&self.vim_command).size(14).color(cmd_bar_color),
 				text("█")
 					.size(14)
-					.color(iced::Color::from_rgba(0.90, 0.92, 0.95, 0.7)),
+					.color(iced::Color { a: 0.7, ..cmd_bar_color }),
 			]
 			.padding(iced::Padding {
 				top: 4.0,
@@ -640,11 +641,12 @@ impl CodeEditor {
 			})
 			.spacing(0),
 		)
-		.style(|_: &Theme| container::Style {
-			background: Some(iced::Background::Color(iced::Color::from_rgb(
-				0.11, 0.12, 0.16,
-			))),
-			..Default::default()
+		.style({
+			let bg = self.theme.cmdbar_bg;
+			move |_: &Theme| container::Style {
+				background: Some(iced::Background::Color(bg)),
+				..Default::default()
+			}
 		})
 		.width(Length::Fill);
 

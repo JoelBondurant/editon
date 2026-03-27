@@ -65,6 +65,18 @@ pub struct EditorTheme {
 	pub minimap_bg: Color,
 	pub minimap_viewport: Color,
 	pub minimap_text: Color,
+
+	// Status bar
+	pub statusbar_bg: Color,
+	pub statusbar_text: Color,
+	pub statusbar_sep: Color,
+
+	// Command bar (vim `:` mode)
+	pub cmdbar_bg: Color,
+	pub cmdbar_text: Color,
+
+	// Tooltip drop shadow
+	pub tooltip_shadow: Color,
 }
 
 /// Convenience: integer RGB + float alpha.
@@ -128,6 +140,15 @@ impl EditorTheme {
 			minimap_bg: Color::from_rgb8(3, 3, 3),
 			minimap_viewport: rgba(255, 255, 255, 0.02),
 			minimap_text: rgba(255, 255, 255, 0.25),
+
+			statusbar_bg:   Color::from_rgb8( 10,  10,  10),
+			statusbar_text: Color::from_rgb8(140, 148, 158),
+			statusbar_sep:  Color::from_rgb8( 89,  94, 102),
+
+			cmdbar_bg:   Color::from_rgb8( 28,  31,  41),
+			cmdbar_text: Color::from_rgb8(230, 235, 242),
+
+			tooltip_shadow: rgba(0, 0, 0, 0.25),
 		}
 	}
 
@@ -186,6 +207,15 @@ impl EditorTheme {
 			minimap_bg: Color::from_rgb8(240, 242, 245),
 			minimap_viewport: rgba(0, 0, 0, 0.06),
 			minimap_text: rgba(0, 0, 0, 0.20),
+
+			statusbar_bg:   Color::from_rgb8(225, 227, 230),
+			statusbar_text: Color::from_rgb8( 80,  85,  95),
+			statusbar_sep:  Color::from_rgb8(160, 165, 175),
+
+			cmdbar_bg:   Color::from_rgb8(210, 213, 218),
+			cmdbar_text: Color::from_rgb8( 20,  20,  30),
+
+			tooltip_shadow: rgba(0, 0, 0, 0.15),
 		}
 	}
 }

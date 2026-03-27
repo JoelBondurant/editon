@@ -913,7 +913,7 @@ impl<'a, Message> SqlEditor<'a, Message> {
 						width: tw,
 						height: th2,
 					},
-					Color::from_rgba(0.0, 0.0, 0.0, 0.25),
+					th.tooltip_shadow,
 					4.0,
 				);
 				fill_r(
