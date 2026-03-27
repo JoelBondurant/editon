@@ -6,6 +6,7 @@ use iced::advanced::{Clipboard, Renderer as _, Shell};
 use iced::keyboard;
 use iced::mouse;
 use iced::{Color, Element, Event, Length, Pixels, Point, Rectangle, Renderer, Size, Theme};
+use std::sync::OnceLock;
 
 use super::buffer::{Buffer, TokenSpan};
 use super::coords::{CursorPos, TAB_WIDTH, line};
@@ -515,6 +516,17 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		if cur < render_end {
 			render.push((cur, render_end, TokenKind::Plain));
 		}
+		let mut merged: Vec<(usize, usize, TokenKind)> = Vec::with_capacity(render.len());
+		for (start, end, kind) in render {
+			if let Some((_, last_end, last_kind)) = merged.last_mut()
+				&& *last_kind == kind
+				&& *last_end == start
+			{
+				*last_end = end;
+			} else {
+				merged.push((start, end, kind));
+			}
+		}
 
 		let ws_color = Color {
 			a: 0.35,
@@ -522,7 +534,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		};
 		let trail_start = lt.trim_end().chars().count();
 
-		for &(start, end, kind) in &render {
+		for &(start, end, kind) in &merged {
 			if start >= render_end {
 				break;
 			}
@@ -531,7 +543,6 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				continue;
 			}
 			let color = token_color(&kind, th);
-			// Use absolute visual col for tab-stop math; subtract vl_vcol_off for screen X.
 			let mut vcol = line::visual_col_of(&lt, start);
 			let mut seg = String::new();
 			let mut seg_vcol = vcol;
@@ -1255,7 +1266,8 @@ fn fill_r(r: &mut Renderer, rect: Rectangle, color: Color, radius: f32) {
 }
 
 fn draw_text(r: &mut Renderer, content: &str, x: f32, y: f32, color: Color, max_w: f32) {
-	let text_y = y + (LINE_H - FONT_SZ) / 2.0;
+	let x = x.round();
+	let text_y = (y + (LINE_H - FONT_SZ) / 2.0).round();
 	r.fill_text(
 		iced::advanced::text::Text {
 			content: content.to_string().into(),
@@ -1272,7 +1284,7 @@ fn draw_text(r: &mut Renderer, content: &str, x: f32, y: f32, color: Color, max_
 		color,
 		Rectangle {
 			x,
-			y,
+			y: y.round(),
 			width: max_w,
 			height: LINE_H,
 		},
@@ -1342,12 +1354,18 @@ fn measure_text_width(content: &str) -> f32 {
 }
 
 pub fn char_width() -> f32 {
-	let width = measure_text_width("0");
-	if width.is_finite() && width > 0.0 {
-		width
-	} else {
-		CHAR_W
-	}
+	static CHAR_WIDTH: OnceLock<f32> = OnceLock::new();
+
+	*CHAR_WIDTH.get_or_init(|| {
+		let width = measure_text_width("0");
+		let width = if width.is_finite() && width > 0.0 {
+			width
+		} else {
+			CHAR_W
+		};
+
+		(width * 64.0).round() / 64.0
+	})
 }
 
 pub fn gutter_width(line_count: usize) -> f32 {
