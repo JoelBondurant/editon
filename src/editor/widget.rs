@@ -507,11 +507,18 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			kind: k,
 		} in &spans
 		{
+			// If there's a gap before this token, fill it with Plain text.
 			if s > cur {
 				render.push((cur, s, TokenKind::Plain));
+				cur = s;
 			}
-			render.push((s, e, k));
-			cur = e;
+			// Clip token start to 'cur' to prevent double-drawing overlapping tokens
+			// (common when tokens are stale after a text edit but before re-analysis).
+			let s = s.max(cur);
+			if e > s {
+				render.push((s, e, k));
+				cur = e;
+			}
 		}
 		if cur < render_end {
 			render.push((cur, render_end, TokenKind::Plain));
@@ -1244,7 +1251,7 @@ fn fill(r: &mut Renderer, rect: Rectangle, color: Color) {
 			bounds: rect,
 			border: iced::Border::default(),
 			shadow: iced::Shadow::default(),
-			snap: true,
+			snap: false,
 		},
 		color,
 	);
@@ -1259,15 +1266,14 @@ fn fill_r(r: &mut Renderer, rect: Rectangle, color: Color, radius: f32) {
 				..Default::default()
 			},
 			shadow: iced::Shadow::default(),
-			snap: true,
+			snap: false,
 		},
 		color,
 	);
 }
 
 fn draw_text(r: &mut Renderer, content: &str, x: f32, y: f32, color: Color, max_w: f32) {
-	let x = x.round();
-	let text_y = (y + (LINE_H - FONT_SZ) / 2.0).round();
+	let text_y = y + (LINE_H - FONT_SZ) / 2.0;
 	r.fill_text(
 		iced::advanced::text::Text {
 			content: content.to_string().into(),
@@ -1284,7 +1290,7 @@ fn draw_text(r: &mut Renderer, content: &str, x: f32, y: f32, color: Color, max_
 		color,
 		Rectangle {
 			x,
-			y: y.round(),
+			y,
 			width: max_w,
 			height: LINE_H,
 		},

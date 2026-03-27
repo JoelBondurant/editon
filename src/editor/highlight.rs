@@ -33,6 +33,7 @@ pub struct SyntaxToken {
 pub enum SyntaxLanguage {
 	Sql,
 	Rust,
+	Txt,
 }
 
 impl SyntaxLanguage {
@@ -40,6 +41,7 @@ impl SyntaxLanguage {
 		match self {
 			Self::Sql => "SQL",
 			Self::Rust => "Rust",
+			Self::Txt => "Plain Text",
 		}
 	}
 }
@@ -56,7 +58,7 @@ pub struct Highlighter {
 impl Highlighter {
 	pub fn new(language: SyntaxLanguage) -> Self {
 		let parser = match language {
-			SyntaxLanguage::Sql => None,
+			SyntaxLanguage::Sql | SyntaxLanguage::Txt => None,
 			SyntaxLanguage::Rust => {
 				let mut p = Parser::new();
 				let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
@@ -75,6 +77,10 @@ impl Highlighter {
 
 	pub fn parse(&mut self, text: &str) {
 		match self.language {
+			SyntaxLanguage::Txt => {
+				self.tree = None;
+				self.tokens = Vec::new();
+			}
 			SyntaxLanguage::Sql => {
 				self.tree = None;
 				self.tokens = tokenize_sql(text);
@@ -234,8 +240,17 @@ fn tokenize_sql(text: &str) -> Vec<SyntaxToken> {
 			continue;
 		}
 
-		// Two-char operators
+		// Two-char and three-char operators
 		if i + 1 < bytes.len() {
+			let slice = &bytes[i..];
+			if slice.starts_with(b"->>") {
+				tokens.push(SyntaxToken {
+					byte_range: i..i + 3,
+					kind: TokenKind::Operator,
+				});
+				i += 3;
+				continue;
+			}
 			let two = &bytes[i..i + 2];
 			if matches!(
 				two,
@@ -246,14 +261,6 @@ fn tokenize_sql(text: &str) -> Vec<SyntaxToken> {
 					kind: TokenKind::Operator,
 				});
 				i += 2;
-				continue;
-			}
-			if two == b"->>" {
-				tokens.push(SyntaxToken {
-					byte_range: i..i + 3,
-					kind: TokenKind::Operator,
-				});
-				i += 3;
 				continue;
 			}
 		}

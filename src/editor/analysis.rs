@@ -66,6 +66,7 @@ fn collect_diagnostics(
 	tree: Option<&tree_sitter::Tree>,
 ) -> Vec<Diagnostic> {
 	match language {
+		SyntaxLanguage::Txt => Vec::new(),
 		SyntaxLanguage::Rust => {
 			let rope = Rope::from_str(text);
 			let mut diagnostics = Vec::new();

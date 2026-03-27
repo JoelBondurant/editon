@@ -459,12 +459,48 @@ impl Buffer {
 	}
 
 	fn replace_range(&mut self, start: usize, end: usize, insert: &str) {
+		let start_byte = self.document.rope.char_to_byte(start);
+		let end_byte = self.document.rope.char_to_byte(end);
+		let insert_byte_len = insert.len();
+		let deleted_byte_len = end_byte - start_byte;
+
 		let deleted = self.document.rope.slice(start..end).to_string();
 		self.undo_stack
 			.record_change(start, deleted, insert.to_string());
 		self.document.rope.remove(start..end);
 		if !insert.is_empty() {
 			self.document.rope.insert(start, insert);
+		}
+
+		// Incrementally shift tokens to maintain alignment until the next async analysis returns.
+		let diff = insert_byte_len as isize - deleted_byte_len as isize;
+		if diff != 0 {
+			self.document.tokens.retain_mut(|tok| {
+				if tok.byte_range.start >= end_byte {
+					// Entirely after the edit: shift both ends.
+					tok.byte_range.start = (tok.byte_range.start as isize + diff) as usize;
+					tok.byte_range.end = (tok.byte_range.end as isize + diff) as usize;
+					true
+				} else if tok.byte_range.end <= start_byte {
+					// Entirely before the edit: no change.
+					true
+				} else {
+					// Overlaps with the edit: clip or shift as best as possible.
+					if tok.byte_range.start < start_byte {
+						tok.byte_range.end = (tok.byte_range.end as isize + diff)
+							.max(start_byte as isize) as usize;
+						tok.byte_range.start < tok.byte_range.end
+					} else {
+						let new_start = (tok.byte_range.start as isize + diff)
+							.max(start_byte as isize) as usize;
+						let new_end = (tok.byte_range.end as isize + diff)
+							.max(new_start as isize) as usize;
+						tok.byte_range.start = new_start;
+						tok.byte_range.end = new_end;
+						tok.byte_range.start < tok.byte_range.end
+					}
+				}
+			});
 		}
 	}
 
@@ -1017,6 +1053,7 @@ impl Buffer {
 					let trimmed = before_cursor.trim_end();
 					let extra =
 						match self.document.language {
+							SyntaxLanguage::Txt => "",
 							SyntaxLanguage::Sql => {
 								if trimmed.ends_with('(')
 									|| trimmed.ends_with('{') || trimmed.ends_with('[')
@@ -1076,6 +1113,7 @@ impl Buffer {
 		let trimmed = before_cursor.trim_end();
 
 		let extra = match self.document.language {
+			SyntaxLanguage::Txt => "",
 			SyntaxLanguage::Sql => {
 				if trimmed.ends_with('(')
 					|| trimmed.ends_with('{')

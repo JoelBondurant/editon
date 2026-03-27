@@ -122,7 +122,14 @@ pub mod line {
 	}
 
 	pub fn byte_to_char_idx(text: &str, byte_idx: usize) -> usize {
-		text[..byte_idx.min(text.len())].chars().count()
+		let mut char_count = 0;
+		for (i, _) in text.char_indices() {
+			if i >= byte_idx {
+				return char_count;
+			}
+			char_count += 1;
+		}
+		char_count
 	}
 }
 

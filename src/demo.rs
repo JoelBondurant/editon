@@ -128,6 +128,23 @@ fn main() {
 }
 "#;
 
+const SAMPLE_TXT: &str = r#"This is a plain text file.
+It has no syntax highlighting.
+Repeating delete and retyping here should help determine if the "luminosity flutter"
+is related to the asynchronous tree-sitter or regex-based highlighting.
+
+1. This is a list item.
+2. This is another one.
+   - Sub-item with some indentation.
+   - Another sub-item.
+
+Just some more random text to fill the screen and allow for some scrolling if needed.
+The quick brown fox jumps over the lazy dog.
+THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
+0123456789
+!@#$%^&*()_+
+"#;
+
 struct DemoApp {
 	editor: CodeEditor,
 }
@@ -148,7 +165,8 @@ impl DemoApp {
 		if let EditorMsg::Key(Key::Named(keyboard::key::Named::F5), _, _) = &m {
 			let (content, lang) = match self.editor.buffer.language() {
 				SyntaxLanguage::Sql => (SAMPLE_RUST, SyntaxLanguage::Rust),
-				SyntaxLanguage::Rust => (SAMPLE_SQL, SyntaxLanguage::Sql),
+				SyntaxLanguage::Rust => (SAMPLE_TXT, SyntaxLanguage::Txt),
+				SyntaxLanguage::Txt => (SAMPLE_SQL, SyntaxLanguage::Sql),
 			};
 			self.editor.set_content_with_language(content, lang);
 			return Task::none();
