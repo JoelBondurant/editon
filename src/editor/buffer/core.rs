@@ -303,6 +303,46 @@ impl Buffer {
 			.collect()
 	}
 
+	fn newline_insert_text_and_col(&self, caret: CursorPos) -> (String, CharIdx) {
+		let indent = self.line_indent(caret.line);
+		let line = self.line_text(caret.line);
+		let before_cursor: String = line.chars().take(*caret.col).collect();
+		let after_cursor: String = line.chars().skip(*caret.col).collect();
+
+		let extra = match self.document.language {
+			SyntaxLanguage::Sql => {
+				let trimmed = before_cursor.trim_end();
+				let next_trimmed = after_cursor.trim_start();
+				if trimmed.ends_with('(') && !next_trimmed.starts_with(')') {
+					if indent.contains('\t') && !indent.contains(' ') {
+						"\t"
+					} else {
+						"    "
+					}
+				} else {
+					""
+				}
+			}
+			SyntaxLanguage::Txt => "",
+			SyntaxLanguage::Rust => {
+				let trimmed = before_cursor.trim_end();
+				if trimmed.ends_with('{')
+					|| trimmed.ends_with('(')
+					|| trimmed.ends_with('[')
+					|| trimmed.ends_with("=>")
+				{
+					"    "
+				} else {
+					""
+				}
+			}
+		};
+
+		let insert = format!("\n{}{}", indent, extra);
+		let col = CharIdx(indent.chars().count() + extra.chars().count());
+		(insert, col)
+	}
+
 	fn char_at(&self, p: CursorPos) -> Option<char> {
 		self.line_text(self.clamp_pos(p).line)
 			.chars()
@@ -1029,41 +1069,12 @@ impl Buffer {
 				.iter()
 				.copied()
 				.map(|caret| {
-					let indent = self.line_indent(caret.line);
-					let before = self.line_text(caret.line);
-					let before_cursor = &before[..(*caret.col).min(before.len())];
-					let trimmed = before_cursor.trim_end();
-					let extra =
-						match self.document.language {
-							SyntaxLanguage::Txt => "",
-							SyntaxLanguage::Sql => {
-								if trimmed.ends_with('(')
-									|| trimmed.ends_with('{') || trimmed.ends_with('[')
-									|| trimmed.to_uppercase().ends_with(" AS")
-									|| trimmed.to_uppercase().ends_with(" BEGIN")
-									|| trimmed.to_uppercase().ends_with(" THEN")
-								{
-									"    "
-								} else {
-									""
-								}
-							}
-							SyntaxLanguage::Rust => {
-								if trimmed.ends_with('{')
-									|| trimmed.ends_with('(') || trimmed.ends_with('[')
-									|| trimmed.ends_with("=>")
-								{
-									"    "
-								} else {
-									""
-								}
-							}
-						};
+					let (text, col) = self.newline_insert_text_and_col(caret);
 					(
 						CharIdx(self.pos_to_char(caret)),
 						caret,
-						format!("\n{}{}", indent, extra),
-						CharIdx(indent.chars().count() + extra.chars().count()),
+						text,
+						col,
 					)
 				})
 				.collect();
@@ -1089,44 +1100,10 @@ impl Buffer {
 		self.delete_selection_inner();
 		self.session.desired_col = None;
 		let pos = self.session.selection.head;
-		let indent = self.line_indent(pos.line);
-		let before = self.line_text(pos.line);
-		let before_cursor = &before[..(*pos.col).min(before.len())];
-		let trimmed = before_cursor.trim_end();
-
-		let extra = match self.document.language {
-			SyntaxLanguage::Txt => "",
-			SyntaxLanguage::Sql => {
-				if trimmed.ends_with('(')
-					|| trimmed.ends_with('{')
-					|| trimmed.ends_with('[')
-					|| trimmed.to_uppercase().ends_with(" AS")
-					|| trimmed.to_uppercase().ends_with(" BEGIN")
-					|| trimmed.to_uppercase().ends_with(" THEN")
-				{
-					"    "
-				} else {
-					""
-				}
-			}
-			SyntaxLanguage::Rust => {
-				if trimmed.ends_with('{')
-					|| trimmed.ends_with('(')
-					|| trimmed.ends_with('[')
-					|| trimmed.ends_with("=>")
-				{
-					"    "
-				} else {
-					""
-				}
-			}
-		};
-
-		let ins = format!("\n{}{}", indent, extra);
+		let (ins, col) = self.newline_insert_text_and_col(pos);
 		let ci = self.pos_to_char(pos);
 		self.insert_char_at(CharIdx(ci), &ins);
-		self.session.selection =
-			Selection::caret(CursorPos::new(pos.line + 1, CharIdx(indent.chars().count() + extra.chars().count())));
+		self.session.selection = Selection::caret(CursorPos::new(pos.line + 1, col));
 		self.post_edit();
 	}
 
