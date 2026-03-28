@@ -37,6 +37,13 @@ macro_rules! impl_index_behavior {
 			}
 		}
 
+		impl std::ops::Sub<Self> for $name {
+			type Output = usize;
+			fn sub(self, rhs: Self) -> Self::Output {
+				self.0.saturating_sub(rhs.0)
+			}
+		}
+
 		impl std::ops::Add<Self> for $name {
 			type Output = Self;
 			fn add(self, rhs: Self) -> Self::Output {
@@ -44,10 +51,15 @@ macro_rules! impl_index_behavior {
 			}
 		}
 
-		impl std::ops::Sub<Self> for $name {
-			type Output = Self;
-			fn sub(self, rhs: Self) -> Self::Output {
-				$name(self.0.saturating_sub(rhs.0))
+		impl $name {
+			pub fn saturating_sub<T: Into<usize>>(self, rhs: T) -> Self {
+				$name(self.0.saturating_sub(rhs.into()))
+			}
+			pub fn min<T: Into<Self>>(self, other: T) -> Self {
+				$name(self.0.min(other.into().0))
+			}
+			pub fn max<T: Into<Self>>(self, other: T) -> Self {
+				$name(self.0.max(other.into().0))
 			}
 		}
 
@@ -60,6 +72,12 @@ macro_rules! impl_index_behavior {
 		impl From<usize> for $name {
 			fn from(v: usize) -> Self {
 				Self(v)
+			}
+		}
+
+		impl From<$name> for usize {
+			fn from(v: $name) -> Self {
+				v.0
 			}
 		}
 	};

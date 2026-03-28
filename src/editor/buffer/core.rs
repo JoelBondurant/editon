@@ -554,7 +554,7 @@ impl Buffer {
 			return;
 		}
 		self.save_undo_boundary();
-		let bottom = bottom.min(self.line_count().saturating_sub(1));
+		let bottom = bottom.min(self.line_count().saturating_sub(1usize));
 		for li_raw in (*top..=*bottom).rev() {
 			let li = LineIdx(li_raw);
 			let line_len = self.line_len(li);
@@ -577,7 +577,7 @@ impl Buffer {
 		if text.is_empty() {
 			return;
 		}
-		let bottom = bottom.min(self.line_count().saturating_sub(1));
+		let bottom = bottom.min(self.line_count().saturating_sub(1usize));
 		if bottom <= top {
 			return;
 		}
@@ -710,7 +710,7 @@ impl Buffer {
 			return;
 		}
 		if self.has_multiple_carets() {
-			self.insert_str(text);
+			self.insert_text(text);
 			return;
 		}
 		self.save_undo(EditKind::Paste);
@@ -779,7 +779,7 @@ impl Buffer {
 		let real_start = start_ci.min(end_ci);
 		let real_end = start_ci.max(end_ci);
 		self.remove_range(CharIdx(real_start), CharIdx(real_end));
-		let new_line = line.min(self.line_count().saturating_sub(1));
+		let new_line = line.min(self.line_count().saturating_sub(1usize));
 		self.session.selection = Selection::caret(CursorPos::new(new_line, 0));
 		self.post_edit();
 	}
@@ -958,26 +958,10 @@ impl Buffer {
 	// ── Editing ───────────────────────────────────────────────────────────
 
 	pub fn insert_char(&mut self, ch: char) {
-		if self.has_multiple_carets() {
-			self.insert_str(&ch.to_string());
-			return;
-		}
-		self.save_undo(EditKind::Insert);
-		self.delete_selection_inner();
-		self.session.desired_col = None;
-		let pos = self.session.selection.head;
-		let ci = self.pos_to_char(pos);
-		self.insert_char_at(CharIdx(ci), &ch.to_string());
-		let new = if ch == '\n' {
-			CursorPos::new(pos.line + 1, 0)
-		} else {
-			CursorPos::new(pos.line, pos.col + 1)
-		};
-		self.session.selection = Selection::caret(new);
-		self.post_edit();
+		self.insert_text(&ch.to_string());
 	}
 
-	pub fn insert_str(&mut self, text: &str) {
+	pub fn insert_text(&mut self, text: &str) {
 		if text.is_empty() {
 			return;
 		}
@@ -1219,11 +1203,11 @@ impl Buffer {
 						return None;
 					}
 					let (new_pos, start, end) = if *caret.col == 0 {
-						let prev_line = caret.line.saturating_sub(1);
+						let prev_line = caret.line.saturating_sub(1usize);
 						let new_pos = CursorPos::new(prev_line, self.line_len(prev_line));
 						(new_pos, self.pos_to_char(new_pos), self.pos_to_char(caret))
 					} else {
-						let new_pos = CursorPos::new(caret.line, caret.col.saturating_sub(1));
+						let new_pos = CursorPos::new(caret.line, caret.col.saturating_sub(1usize));
 						(new_pos, self.pos_to_char(new_pos), self.pos_to_char(caret))
 					};
 					Some((start, end, caret, new_pos))
@@ -1266,10 +1250,10 @@ impl Buffer {
 			if let Some(prev) = self.char_before(p) {
 				if let Some(exp) = matching_close(prev) {
 					if self.char_at(p) == Some(exp) {
-						let cs = self.pos_to_char(CursorPos::new(p.line, p.col.saturating_sub(1)));
+						let cs = self.pos_to_char(CursorPos::new(p.line, p.col.saturating_sub(1usize)));
 						self.remove_range(CharIdx(cs), CharIdx(cs + 2));
 						self.session.selection =
-							Selection::caret(CursorPos::new(p.line, p.col.saturating_sub(1)));
+							Selection::caret(CursorPos::new(p.line, p.col.saturating_sub(1usize)));
 						self.post_edit();
 						return;
 					}
@@ -1279,12 +1263,12 @@ impl Buffer {
 
 		let (new_pos, ds, de);
 		if *p.col == 0 {
-			let pl = p.line.saturating_sub(1);
+			let pl = p.line.saturating_sub(1usize);
 			new_pos = CursorPos::new(pl, self.line_len(pl));
 			ds = self.pos_to_char(new_pos);
 			de = self.pos_to_char(p);
 		} else {
-			new_pos = CursorPos::new(p.line, p.col.saturating_sub(1));
+			new_pos = CursorPos::new(p.line, p.col.saturating_sub(1usize));
 			ds = self.pos_to_char(new_pos);
 			de = self.pos_to_char(p);
 		}
@@ -1650,9 +1634,9 @@ impl Buffer {
 
 	fn move_caret_left(&self, p: CursorPos) -> CursorPos {
 		if *p.col > 0 {
-			CursorPos::new(p.line, p.col.saturating_sub(1))
+			CursorPos::new(p.line, p.col.saturating_sub(1usize))
 		} else if *p.line > 0 {
-			let pl = p.line.saturating_sub(1);
+			let pl = p.line.saturating_sub(1usize);
 			CursorPos::new(pl, self.line_len(pl))
 		} else {
 			p
@@ -1674,7 +1658,7 @@ impl Buffer {
 		if *p.line == 0 {
 			return p;
 		}
-		let mut line = p.line.saturating_sub(1);
+		let mut line = p.line.saturating_sub(1usize);
 		while *line > 0 && self.document.folds.is_hidden(line) {
 			line -= 1;
 		}
@@ -1686,7 +1670,7 @@ impl Buffer {
 			return p;
 		}
 		let mut line = p.line + 1;
-		let max = self.line_count().saturating_sub(1);
+		let max = self.line_count().saturating_sub(1usize);
 		while line < max && self.document.folds.is_hidden(line) {
 			line += 1;
 		}
@@ -1753,9 +1737,9 @@ impl Buffer {
 		}
 		let p = self.session.selection.head;
 		let n = if *p.col > 0 {
-			CursorPos::new(p.line, p.col.saturating_sub(1))
+			CursorPos::new(p.line, p.col.saturating_sub(1usize))
 		} else if *p.line > 0 {
-			let pl = p.line.saturating_sub(1);
+			let pl = p.line.saturating_sub(1usize);
 			CursorPos::new(pl, self.line_len(pl))
 		} else {
 			p
@@ -1818,7 +1802,7 @@ impl Buffer {
 		}
 		let tc = self.session.desired_col.unwrap_or(p.col);
 		// Skip folded lines
-		let mut nl = p.line.saturating_sub(1);
+		let mut nl = p.line.saturating_sub(1usize);
 		while *nl > 0 && self.document.folds.is_hidden(nl) {
 			nl -= 1;
 		}
@@ -1852,7 +1836,7 @@ impl Buffer {
 		}
 		let tc = self.session.desired_col.unwrap_or(p.col);
 		let mut nl = p.line + 1;
-		let max = self.line_count().saturating_sub(1);
+		let max = self.line_count().saturating_sub(1usize);
 		while nl < max && self.document.folds.is_hidden(nl) {
 			nl += 1;
 		}
@@ -1936,7 +1920,7 @@ impl Buffer {
 
 	pub fn move_to_end(&mut self, extend: bool) {
 		self.session.desired_col = None;
-		let l = self.line_count().saturating_sub(1);
+		let l = self.line_count().saturating_sub(1usize);
 		self.set_head(CursorPos::new(l, self.line_len(l)), extend);
 	}
 
@@ -1973,14 +1957,14 @@ impl Buffer {
 	pub fn page_down(&mut self, vis: usize, extend: bool) {
 		let p = self.session.selection.head;
 		let tc = self.session.desired_col.unwrap_or(p.col);
-		let nl = (p.line + vis).min(self.line_count().saturating_sub(1));
+		let nl = (p.line + vis).min(self.line_count().saturating_sub(1usize));
 		self.set_head(CursorPos::new(nl, tc.min(self.line_len(nl))), extend);
 		self.session.desired_col = Some(tc);
 	}
 
 	pub fn select_all(&mut self) {
 		self.clear_secondary_selections();
-		let l = self.line_count().saturating_sub(1);
+		let l = self.line_count().saturating_sub(1usize);
 		self.session.selection = Selection {
 			anchor: CursorPos::zero(),
 			head: CursorPos::new(l, self.line_len(l)),
@@ -2015,14 +1999,52 @@ impl Buffer {
 
 	pub fn select_line(&mut self, line: LineIdx) {
 		self.clear_secondary_selections();
-		let l = line.min(self.line_count().saturating_sub(1));
+		let l = line.min(self.line_count().saturating_sub(1usize));
 		self.session.selection = Selection {
 			anchor: CursorPos::new(l, 0),
 			head: CursorPos::new(l, self.line_len(l)),
 		};
 	}
 
-	fn set_head(&mut self, p: CursorPos, extend: bool) {
+	pub fn move_to_char(&mut self, target: char, before: bool, extend: bool) {
+		let line = self.session.selection.head.line;
+		let col = self.session.selection.head.col;
+		let lt = self.line_text(line);
+		let chars: Vec<char> = lt.chars().collect();
+
+		let mut result = None;
+		for i in (*col + 1)..chars.len() {
+			if chars[i] == target {
+				result = Some(if before { i.saturating_sub(1usize) } else { i });
+				break;
+			}
+		}
+
+		if let Some(d) = result {
+			self.set_head(CursorPos::new(line, CharIdx(d)), extend);
+		}
+	}
+
+	pub fn move_to_char_back(&mut self, target: char, before: bool, extend: bool) {
+		let line = self.session.selection.head.line;
+		let col = self.session.selection.head.col;
+		let lt = self.line_text(line);
+		let chars: Vec<char> = lt.chars().collect();
+
+		let mut result = None;
+		for i in (0..*col).rev() {
+			if chars[i] == target {
+				result = Some(if before { i + 1 } else { i });
+				break;
+			}
+		}
+
+		if let Some(d) = result {
+			self.set_head(CursorPos::new(line, CharIdx(d)), extend);
+		}
+	}
+
+	pub fn set_head(&mut self, p: CursorPos, extend: bool) {
 		if !extend {
 			self.clear_secondary_selections();
 		}
@@ -2045,7 +2067,7 @@ impl Buffer {
 			if *p.line == 0 {
 				return p;
 			}
-			let pl = p.line.saturating_sub(1);
+			let pl = p.line.saturating_sub(1usize);
 			return CursorPos::new(pl, self.line_len(pl));
 		}
 		let chars: Vec<char> = self.line_text(p.line).chars().collect();
@@ -2152,7 +2174,7 @@ impl Buffer {
 			let end = if l == sl {
 				*sc
 			} else {
-				cs.len().saturating_sub(1)
+				cs.len().saturating_sub(1usize)
 			};
 			for c in (0..=end).rev() {
 				if c >= cs.len() {
@@ -2218,7 +2240,7 @@ impl Buffer {
 		};
 
 		let rep = replacement.to_string();
-		let last = last.min(self.line_count().saturating_sub(1));
+		let last = last.min(self.line_count().saturating_sub(1usize));
 
 		self.save_undo(EditKind::Other);
 

@@ -183,7 +183,7 @@ impl FoldState {
 					i,
 					FoldRegion {
 						start_line: i,
-						end_line: end.saturating_sub(1),
+						end_line: end.saturating_sub(1usize),
 						kind: FoldKind::Indent,
 					},
 				);

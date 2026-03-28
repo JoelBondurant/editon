@@ -4,11 +4,12 @@ use iced::{Element, Length, Subscription, Task, Theme, event};
 
 use super::analysis::{self, AnalysisSnapshot};
 use super::buffer::Buffer;
-use super::coords::{CharIdx, CursorPos, LineIdx, Selection, line};
+use super::command::EditorCommand;
+use super::coords::{CharIdx, CursorPos, LineIdx, line};
 use super::highlight::SyntaxLanguage;
 use super::theme::EditorTheme;
 use super::undo::UndoConfig;
-use super::vim::{NormalEdit, VimMode};
+use super::vim::{VimHandler, VimMode};
 use super::widget;
 use super::widget::{EditorAction, EditorWidget};
 
@@ -17,6 +18,8 @@ use super::widget::{EditorAction, EditorWidget};
 #[derive(Debug, Clone)]
 pub enum EditorMsg {
 	Action(EditorAction),
+	#[allow(dead_code)]
+	Command(EditorCommand),
 	Key(Key, keyboard::Modifiers, Option<String>),
 	Scroll(f32, f32),
 	MouseMove(iced::Point),
@@ -41,7 +44,7 @@ pub struct CodeEditor {
 	pub theme: EditorTheme,
 	pub view: EditorViewState,
 	pub chrome: EditorChromeState,
-	pub vim: VimState,
+	pub vim: VimHandler,
 	pointer: PointerState,
 }
 
@@ -56,32 +59,6 @@ pub struct EditorViewState {
 
 pub struct EditorChromeState {
 	pub status: String,
-}
-
-pub struct VimState {
-	pub mode: VimMode,
-	pub(in crate::editor) command: String,
-	pub(in crate::editor) count: String,
-	pub(in crate::editor) pending_g: bool,
-	pub(in crate::editor) pending_op: Option<char>,
-	/// Pending block insert: (insert_col, top_line, bottom_line)
-	pub(in crate::editor) block_insert: Option<(CharIdx, LineIdx, LineIdx)>,
-	/// Pending f/F/t/T: stores which variant is waiting for the target char
-	pub(in crate::editor) pending_find: Option<char>,
-	/// Last f/F/t/T find, for ; and , repeat
-	pub(in crate::editor) last_find: Option<(char, char)>,
-	/// Pending z-prefix (zz/zt/zb)
-	pub(in crate::editor) pending_z: bool,
-	/// Pending i/a text-object prefix inside an operator motion
-	pub(in crate::editor) pending_obj_prefix: Option<char>,
-	/// Last repeatable normal-mode edit (for `.`)
-	pub(in crate::editor) last_edit: Option<NormalEdit>,
-	/// Text inserted during the last Insert session (for dot-repeat of change ops)
-	pub(in crate::editor) last_insert_text: String,
-	/// Cursor col when Insert mode was entered (for last_insert_text capture)
-	pub(in crate::editor) insert_enter_col: CharIdx,
-	/// Cursor line when Insert mode was entered
-	pub(in crate::editor) insert_enter_line: LineIdx,
 }
 
 struct PointerState {
@@ -116,22 +93,7 @@ impl CodeEditor {
 			chrome: EditorChromeState {
 				status: String::new(),
 			},
-			vim: VimState {
-				mode: VimMode::Normal,
-				command: String::new(),
-				count: String::new(),
-				pending_g: false,
-				pending_op: None,
-				block_insert: None,
-				pending_find: None,
-				last_find: None,
-				pending_z: false,
-				pending_obj_prefix: None,
-				last_edit: None,
-				last_insert_text: String::new(),
-				insert_enter_col: CharIdx(0),
-				insert_enter_line: LineIdx(0),
-			},
+			vim: VimHandler::new(),
 			pointer: PointerState {
 				is_dragging: false,
 				click_count: 0,
@@ -271,6 +233,9 @@ impl CodeEditor {
 
 	pub fn update(&mut self, msg: EditorMsg) -> Task<EditorMsg> {
 		match msg {
+			EditorMsg::Command(cmd) => {
+				return self.execute_command(cmd);
+			}
 			EditorMsg::AnalysisReady(snapshot) => {
 				if self.buffer.apply_analysis(snapshot) {
 					self.update_status();
@@ -278,48 +243,33 @@ impl CodeEditor {
 				return Task::none();
 			}
 			EditorMsg::Action(EditorAction::Resize(w, h)) => {
-				self.set_viewport(w, h);
-				return Task::none();
+				return self.execute_command(EditorCommand::SetViewport(w, h));
 			}
 			EditorMsg::Action(EditorAction::ToggleFold(line)) => {
-				self.buffer.toggle_fold(LineIdx(line));
-				if self.buffer.document.wrap_config.enabled {
-					self.update_wrap_col();
-				}
-				self.update_status();
-				self.ensure_cursor_visible();
-				return Task::none();
+				return self.execute_command(EditorCommand::ToggleFold(LineIdx(line)));
 			}
 			EditorMsg::Action(EditorAction::MouseDown(pos)) => {
 				let cursor_pos = self.pos_from_pixel(pos);
-				self.buffer.clear_secondary_selections();
-				self.buffer.session.selection.anchor = cursor_pos;
-				self.buffer.session.selection.head = cursor_pos;
 				self.pointer.is_dragging = true;
 				self.pointer.click_count = 1;
-				self.update_status();
+				return self.execute_command(EditorCommand::SetCursor(cursor_pos, false));
 			}
 			EditorMsg::Action(EditorAction::AddCaret(pos)) => {
 				let cursor_pos = self.pos_from_pixel(pos);
-				self.buffer.add_cursor(cursor_pos);
-				self.update_status();
-				return Task::none();
+				return self.execute_command(EditorCommand::AddCursor(cursor_pos));
 			}
 			EditorMsg::Action(EditorAction::DoubleClick(pos)) => {
 				let cursor_pos = self.pos_from_pixel(pos);
-				self.buffer.clear_secondary_selections();
-				self.buffer.select_word_at(cursor_pos);
 				self.pointer.is_dragging = true;
 				self.pointer.click_count = 2;
-				self.update_status();
+				return self.execute_command(EditorCommand::SelectWordAt(cursor_pos));
 			}
 			EditorMsg::Action(_) => {}
 
 			EditorMsg::MouseMove(pos) => {
 				if self.pointer.is_dragging && self.pointer.click_count == 1 {
 					let target = self.pos_from_pixel(pos);
-					self.buffer.session.selection.head = target;
-					self.update_status();
+					return self.execute_command(EditorCommand::SetCursor(target, true));
 				}
 			}
 			EditorMsg::MouseUp => {
@@ -330,9 +280,7 @@ impl CodeEditor {
 				if !text.is_empty() {
 					self.buffer.session.clipboard = text.clone();
 					self.buffer.session.clipboard_is_line = false;
-					self.buffer.paste(&text);
-					self.update_status();
-					self.ensure_cursor_visible();
+					return self.execute_command(EditorCommand::Paste(text));
 				}
 			}
 
@@ -340,10 +288,7 @@ impl CodeEditor {
 				if !text.is_empty() {
 					self.buffer.session.clipboard = text.clone();
 					self.buffer.session.clipboard_is_line = false;
-					self.buffer.move_right(false);
-					self.buffer.paste(&text);
-					self.update_status();
-					self.ensure_cursor_visible();
+					return self.execute_command(EditorCommand::PasteAfter(text));
 				}
 			}
 
@@ -384,69 +329,19 @@ impl CodeEditor {
 					}
 				}
 
-				match self.vim.mode {
-					VimMode::Command => {
-						return self.handle_vim_command_key(key, text);
-					}
-					VimMode::Normal => {
-						return self.handle_vim_normal_key(key, mods, text);
-					}
-					VimMode::Visual | VimMode::VisualLine => {
-						return self.handle_vim_visual_key(key, mods, text);
-					}
-					VimMode::VisualBlock => {
-						return self.handle_vim_visual_block_key(key, mods, text);
-					}
-					VimMode::Insert | VimMode::Off => {}
-				}
+				if self.vim.mode != VimMode::Off {
+					let mode_before = self.vim.mode.clone();
+					let mut vim = std::mem::replace(&mut self.vim, VimHandler::new());
+					let task = vim.handle_key(self, key.clone(), mods, text.clone());
+					self.vim = vim;
 
-				// Insert mode (vim enabled): Escape → Normal
-				if matches!(&key, Key::Named(keyboard::key::Named::Escape))
-					&& self.vim.mode == VimMode::Insert
-					&& !self.buffer.session.search.is_open
-				{
-					let col_before = self.buffer.session.selection.head.col;
-					let line_before = self.buffer.session.selection.head.line;
-					// Capture inserted text for dot-repeat
-					if line_before == self.vim.insert_enter_line
-						&& col_before > self.vim.insert_enter_col
-					{
-						self.vim.last_insert_text = self
-							.buffer
-							.line_text(line_before)
-							.chars()
-							.skip(*self.vim.insert_enter_col)
-							.take(*col_before - *self.vim.insert_enter_col)
-							.collect();
+					if mode_before != VimMode::Insert && self.vim.mode == VimMode::Insert {
+						return task;
 					}
-					self.vim.mode = VimMode::Normal;
-					if *col_before > 0 {
-						self.buffer.move_left(false);
+
+					if !matches!(self.vim.mode, VimMode::Insert | VimMode::Off) {
+						return task;
 					}
-					if let Some((insert_col, top_line, bottom_line)) = self.vim.block_insert.take()
-					{
-						if col_before > insert_col && line_before == top_line {
-							let inserted: String = self
-								.buffer
-								.line_text(top_line)
-								.chars()
-								.skip(*insert_col)
-								.take(*col_before - *insert_col)
-								.collect();
-							if !inserted.is_empty() {
-								self.buffer.block_insert_text(
-									top_line,
-									bottom_line,
-									insert_col,
-									&inserted,
-								);
-							}
-						}
-						self.buffer.session.selection =
-							Selection::caret(CursorPos::new(top_line, insert_col));
-					}
-					self.update_status();
-					return Task::none();
 				}
 
 				let shift = mods.shift();
@@ -456,26 +351,16 @@ impl CodeEditor {
 				if self.buffer.session.search.is_open {
 					match key {
 						Key::Named(keyboard::key::Named::Escape) => {
-							self.buffer.search_close();
-							self.update_status();
-							return Task::none();
+							return self.execute_command(EditorCommand::SearchClose);
 						}
 						Key::Named(keyboard::key::Named::Enter) if ctrl && shift => {
-							self.buffer.search_replace_all();
-							self.update_status();
-							return Task::none();
+							return self.execute_command(EditorCommand::SearchReplaceAll);
 						}
 						Key::Named(keyboard::key::Named::Enter) if shift => {
-							self.buffer.search_prev();
-							self.ensure_cursor_visible();
-							self.update_status();
-							return Task::none();
+							return self.execute_command(EditorCommand::SearchPrev);
 						}
 						Key::Named(keyboard::key::Named::Enter) => {
-							self.buffer.search_next();
-							self.ensure_cursor_visible();
-							self.update_status();
-							return Task::none();
+							return self.execute_command(EditorCommand::SearchNext);
 						}
 						_ => {}
 					}
@@ -489,22 +374,22 @@ impl CodeEditor {
 						self.buffer.add_caret_below();
 					}
 					Key::Character(ref ch) if ctrl && ch.as_str() == "f" => {
-						self.buffer.search_open();
+						return self.execute_command(EditorCommand::SearchOpen);
 					}
 					Key::Character(ref ch) if ctrl && shift && ch.as_str() == "h" => {
-						self.buffer.search_replace_current();
+						return self.execute_command(EditorCommand::SearchReplaceCurrent);
 					}
 					Key::Character(ref ch) if ctrl && shift && ch.as_str() == "[" => {
 						let l = self.buffer.session.selection.head.line;
-						self.buffer.toggle_fold(l);
+						return self.execute_command(EditorCommand::ToggleFold(l));
 					}
 					Key::Character(ref ch) if ctrl && shift && ch.as_str() == "]" => {
 						let l = self.buffer.session.selection.head.line;
-						self.buffer.toggle_fold(l);
+						return self.execute_command(EditorCommand::ToggleFold(l));
 					}
 					Key::Character(ref ch) if ctrl && ch.as_str() == "w" => {
 						let enabled = !self.buffer.document.wrap_config.enabled;
-						self.set_wrap_enabled(enabled);
+						return self.execute_command(EditorCommand::SetWrap(enabled));
 					}
 					Key::Character(ref ch) if ctrl && ch.as_str() == "m" => {
 						self.view.show_minimap = !self.view.show_minimap;
@@ -513,21 +398,35 @@ impl CodeEditor {
 						self.view.show_whitespace = !self.view.show_whitespace;
 					}
 					Key::Named(keyboard::key::Named::ArrowLeft) if ctrl => {
-						self.buffer.move_word_left(shift)
+						return self.execute_command(EditorCommand::MoveWordBackward(1, shift));
 					}
 					Key::Named(keyboard::key::Named::ArrowRight) if ctrl => {
-						self.buffer.move_word_right(shift)
+						return self.execute_command(EditorCommand::MoveWordForward(1, shift));
 					}
-					Key::Named(keyboard::key::Named::ArrowLeft) => self.buffer.move_left(shift),
-					Key::Named(keyboard::key::Named::ArrowRight) => self.buffer.move_right(shift),
-					Key::Named(keyboard::key::Named::ArrowUp) => self.buffer.move_up(shift),
-					Key::Named(keyboard::key::Named::ArrowDown) => self.buffer.move_down(shift),
+					Key::Named(keyboard::key::Named::ArrowLeft) => {
+						return self.execute_command(EditorCommand::MoveLeft(1, shift));
+					}
+					Key::Named(keyboard::key::Named::ArrowRight) => {
+						return self.execute_command(EditorCommand::MoveRight(1, shift));
+					}
+					Key::Named(keyboard::key::Named::ArrowUp) => {
+						return self.execute_command(EditorCommand::MoveUp(1, shift));
+					}
+					Key::Named(keyboard::key::Named::ArrowDown) => {
+						return self.execute_command(EditorCommand::MoveDown(1, shift));
+					}
 					Key::Named(keyboard::key::Named::Home) if ctrl => {
-						self.buffer.move_to_start(shift)
+						return self.execute_command(EditorCommand::MoveToDocStart(shift));
 					}
-					Key::Named(keyboard::key::Named::End) if ctrl => self.buffer.move_to_end(shift),
-					Key::Named(keyboard::key::Named::Home) => self.buffer.move_home(shift),
-					Key::Named(keyboard::key::Named::End) => self.buffer.move_end(shift),
+					Key::Named(keyboard::key::Named::End) if ctrl => {
+						return self.execute_command(EditorCommand::MoveToDocEnd(shift));
+					}
+					Key::Named(keyboard::key::Named::Home) => {
+						return self.execute_command(EditorCommand::MoveToLineStart(shift));
+					}
+					Key::Named(keyboard::key::Named::End) => {
+						return self.execute_command(EditorCommand::MoveToLineEnd(shift));
+					}
 					Key::Named(keyboard::key::Named::PageUp) => {
 						let v = widget::visible_line_count(self.view.viewport_h);
 						self.buffer.page_up(v, shift);
@@ -536,59 +435,45 @@ impl CodeEditor {
 						let v = widget::visible_line_count(self.view.viewport_h);
 						self.buffer.page_down(v, shift);
 					}
-					Key::Named(keyboard::key::Named::Backspace) if ctrl => {
-						self.buffer.delete_word_back()
+					Key::Named(keyboard::key::Named::Backspace) => {
+						return self.execute_command(EditorCommand::DeleteBack);
 					}
-					Key::Named(keyboard::key::Named::Delete) if ctrl => {
-						self.buffer.delete_word_forward()
+					Key::Named(keyboard::key::Named::Delete) => {
+						return self.execute_command(EditorCommand::DeleteForward);
 					}
-					Key::Named(keyboard::key::Named::Backspace) => self.buffer.backspace(),
-					Key::Named(keyboard::key::Named::Delete) => self.buffer.delete(),
-					Key::Named(keyboard::key::Named::Enter) => self.buffer.insert_newline(),
-					Key::Named(keyboard::key::Named::Tab) if shift => self.buffer.dedent_lines(),
+					Key::Named(keyboard::key::Named::Enter) => {
+						return self.execute_command(EditorCommand::InsertNewline);
+					}
+					Key::Named(keyboard::key::Named::Tab) if shift => {
+						return self.execute_command(EditorCommand::Outdent);
+					}
 					Key::Named(keyboard::key::Named::Tab) => {
-						if self.buffer.session.selection.is_caret() {
-							self.buffer.insert_char('\t');
-						} else {
-							self.buffer.indent_lines();
-						}
+						return self.execute_command(EditorCommand::Indent);
 					}
 					Key::Character(ref ch) => {
 						let s = ch.as_str();
 						if ctrl {
 							match s {
-								"a" => self.buffer.select_all(),
-								"z" if shift => self.buffer.redo(),
-								"z" => self.buffer.undo(),
-								"y" => self.buffer.redo(),
+								"a" => return self.execute_command(EditorCommand::SelectAll),
+								"z" if shift => return self.execute_command(EditorCommand::Redo),
+								"z" => return self.execute_command(EditorCommand::Undo),
+								"y" => return self.execute_command(EditorCommand::Redo),
 								"d" => self.buffer.duplicate_line(),
-								"c" => {
-									let copied = self.buffer.copy();
-									if !copied.is_empty() {
-										return iced::clipboard::write::<EditorMsg>(copied).map(|_| EditorMsg::Noop);
-									}
-								}
-								"x" => {
-									let cut = self.buffer.cut();
-									if !cut.is_empty() {
-										return iced::clipboard::write::<EditorMsg>(cut).map(|_| EditorMsg::Noop);
-									}
-								}
+								"c" => return self.execute_command(EditorCommand::Copy),
+								"x" => return self.execute_command(EditorCommand::Cut),
 								"v" => {
 									return iced::clipboard::read()
 										.map(|t| EditorMsg::Paste(t.unwrap_or_default()));
 								}
 								_ => {}
 							}
-						} else {
+						} else if !ctrl && !alt {
 							let insert = text.as_deref().unwrap_or(s);
-							for c in insert.chars() {
-								self.buffer.insert_char_auto_pair(c);
-							}
+							return self.execute_command(EditorCommand::Insert(insert.to_string()));
 						}
 					}
 					Key::Named(keyboard::key::Named::Space) if !mods.command() => {
-						self.buffer.insert_char_auto_pair(' ');
+						return self.execute_command(EditorCommand::Insert(" ".to_string()));
 					}
 					_ => {}
 				}
@@ -647,7 +532,7 @@ impl CodeEditor {
 			.scroll_x(self.view.scroll_x)
 			.show_minimap(self.view.show_minimap)
 			.show_whitespace(self.view.show_whitespace)
-			.block_cursor(self.vim.mode == VimMode::Normal)
+			.block_cursor(self.vim.mode != VimMode::Insert && self.vim.mode != VimMode::Off)
 			.visual_block(visual_block);
 
 		let sc = self.theme.statusbar_text;
@@ -734,6 +619,226 @@ impl CodeEditor {
 		}
 	}
 
+	pub fn execute_command(&mut self, cmd: EditorCommand) -> Task<EditorMsg> {
+		match cmd {
+			EditorCommand::Insert(text) => {
+				for ch in text.chars() {
+					self.buffer.insert_char_auto_pair(ch);
+				}
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::DeleteBack => {
+				self.buffer.backspace();
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::DeleteForward => {
+				self.buffer.delete();
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::InsertNewline => {
+				self.buffer.insert_newline();
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::Indent => {
+				self.buffer.indent_lines();
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::Outdent => {
+				self.buffer.dedent_lines();
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::ReplaceChar(ch) => {
+				self.buffer.replace_char(ch);
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+
+			EditorCommand::MoveUp(n, extend) => {
+				for _ in 0..n {
+					self.buffer.move_up(extend);
+				}
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::MoveDown(n, extend) => {
+				for _ in 0..n {
+					self.buffer.move_down(extend);
+				}
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::MoveLeft(n, extend) => {
+				for _ in 0..n {
+					self.buffer.move_left(extend);
+				}
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::MoveRight(n, extend) => {
+				for _ in 0..n {
+					self.buffer.move_right(extend);
+				}
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::MoveWordForward(n, extend) => {
+				for _ in 0..n {
+					self.buffer.move_word_right(extend);
+				}
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::MoveWordBackward(n, extend) => {
+				for _ in 0..n {
+					self.buffer.move_word_left(extend);
+				}
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::MoveToLineStart(extend) => {
+				self.buffer.move_home(extend);
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::MoveToLineEnd(extend) => {
+				self.buffer.move_end(extend);
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::MoveToDocStart(extend) => {
+				self.buffer.move_to_start(extend);
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::MoveToDocEnd(extend) => {
+				self.buffer.move_to_end(extend);
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::SetCursor(pos, extend) => {
+				self.buffer.set_head(pos, extend);
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::AddCursor(pos) => {
+				self.buffer.add_cursor(pos);
+				self.update_status();
+			}
+			EditorCommand::ClearSecondarySelections => {
+				self.buffer.clear_secondary_selections();
+				self.update_status();
+			}
+			EditorCommand::SelectWordAt(pos) => {
+				self.buffer.select_word_at(pos);
+				self.update_status();
+			}
+			EditorCommand::SelectAll => {
+				self.buffer.select_all();
+				self.update_status();
+			}
+
+			EditorCommand::Cut => {
+				let text = self.buffer.cut();
+				if !text.is_empty() {
+					return iced::clipboard::write::<EditorMsg>(text).map(|_| EditorMsg::Noop);
+				}
+			}
+			EditorCommand::Copy => {
+				let text = self.buffer.copy();
+				if !text.is_empty() {
+					return iced::clipboard::write::<EditorMsg>(text).map(|_| EditorMsg::Noop);
+				}
+			}
+			EditorCommand::Paste(text) => {
+				self.buffer.paste(&text);
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::PasteAfter(text) => {
+				let p = self.buffer.session.selection.head;
+				let ll = self.buffer.line_len(p.line);
+				if p.col < ll {
+					self.buffer.move_right(false);
+				}
+				self.buffer.paste(&text);
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+
+			EditorCommand::Undo => {
+				self.buffer.undo();
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::Redo => {
+				self.buffer.redo();
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+
+			EditorCommand::SetLanguage(lang) => {
+				self.set_language(lang);
+			}
+			EditorCommand::ToggleFold(line) => {
+				self.buffer.toggle_fold(line);
+				if self.buffer.document.wrap_config.enabled {
+					self.update_wrap_col();
+				}
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::SetWrap(enabled) => {
+				self.set_wrap_enabled(enabled);
+			}
+			EditorCommand::Scroll(dx, dy) => {
+				self.view.scroll_x = (self.view.scroll_x + dx).max(0.0);
+				self.view.scroll_y = (self.view.scroll_y + dy).max(0.0);
+			}
+			EditorCommand::SetViewport(w, h) => {
+				self.set_viewport(w, h);
+			}
+
+			EditorCommand::SearchOpen => {
+				self.buffer.search_open();
+				self.update_status();
+			}
+			EditorCommand::SearchClose => {
+				self.buffer.search_close();
+				self.update_status();
+			}
+			EditorCommand::SearchNext => {
+				self.buffer.search_next();
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::SearchPrev => {
+				self.buffer.search_prev();
+				self.update_status();
+				self.ensure_cursor_visible();
+			}
+			EditorCommand::SearchReplaceCurrent => {
+				self.buffer.search_replace_current();
+				self.update_status();
+			}
+			EditorCommand::SearchReplaceAll => {
+				self.buffer.search_replace_all();
+				self.update_status();
+			}
+
+			EditorCommand::VimSetMode(mode) => {
+				self.vim.mode = mode;
+				self.update_status();
+			}
+		}
+		Task::none()
+	}
+
 	// ─── Internal helpers ──────────────────────────────────────────────────────
 
 	fn pos_from_pixel(&self, pixel: iced::Point) -> CursorPos {
@@ -756,9 +861,7 @@ impl CodeEditor {
 	}
 
 	pub(in crate::editor) fn take_count(&mut self) -> usize {
-		let n = self.vim.count.parse::<usize>().unwrap_or(1).max(1);
-		self.vim.count.clear();
-		n
+		self.vim.take_count()
 	}
 
 	pub(in crate::editor) fn update_status(&mut self) {
@@ -823,86 +926,7 @@ impl CodeEditor {
 		};
 	}
 
-	/// Record cursor position and enter Insert mode (for dot-repeat tracking).
-	pub(in crate::editor) fn enter_insert_mode(&mut self) {
-		self.vim.insert_enter_col = self.buffer.session.selection.head.col;
-		self.vim.insert_enter_line = self.buffer.session.selection.head.line;
-		self.vim.mode = VimMode::Insert;
-	}
-
-	/// Find char `target` in the f/F/t/T `kind` direction on current line.
-	/// `extend` keeps selection anchor (visual / operator motion).
-	pub(in crate::editor) fn do_find(
-		&mut self,
-		kind: char,
-		target: char,
-		count: usize,
-		extend: bool,
-	) {
-		let forward = matches!(kind, 'f' | 't');
-		let before_target = matches!(kind, 't' | 'T');
-
-		let line = self.buffer.session.selection.head.line;
-		let col = self.buffer.session.selection.head.col;
-		let lt = self.buffer.line_text(line);
-		let chars: Vec<char> = lt.chars().collect();
-
-		let dest = if forward {
-			let mut found = 0usize;
-			let mut result = None;
-			for i in (*col + 1)..chars.len() {
-				if chars[i] == target {
-					found += 1;
-					if found >= count {
-						result = Some(if before_target {
-							i.saturating_sub(1)
-						} else {
-							i
-						});
-						break;
-					}
-				}
-			}
-			result
-		} else {
-			let mut found = 0usize;
-			let mut result = None;
-			for i in (0..*col).rev() {
-				if chars[i] == target {
-					found += 1;
-					if found >= count {
-						result = Some(if before_target { i + 1 } else { i });
-						break;
-					}
-				}
-			}
-			result
-		};
-
-		if let Some(d) = dest {
-			let pos = CursorPos::new(line, CharIdx(d));
-			if extend {
-				self.buffer.session.selection.head = pos;
-			} else {
-				self.buffer.session.selection = Selection::caret(pos);
-			}
-		}
-	}
-
-	/// Scroll so the cursor is centered (`z`), at top (`t`), or bottom (`b`).
-	pub(in crate::editor) fn scroll_cursor_z(&mut self, mode: char) {
-		let vl_idx = self.cursor_visual_line_idx();
-		let cy = vl_idx as f32 * widget::line_height();
-		let lh = widget::line_height();
-		self.view.scroll_y = match mode {
-			'z' => (cy - self.view.viewport_h / 2.0 + lh / 2.0).max(0.0),
-			't' => cy,
-			'b' => (cy - self.view.viewport_h + lh).max(0.0),
-			_ => self.view.scroll_y,
-		};
-	}
-
-	fn cursor_visual_line_idx(&self) -> usize {
+	pub(in crate::editor) fn cursor_visual_line_idx(&self) -> usize {
 		let head = self.buffer.session.selection.head;
 		self.buffer
 			.document
@@ -928,6 +952,9 @@ impl CodeEditor {
 			0.0
 		};
 		let vh = self.view.viewport_h - widget::top_pad() * 2.0 - sp;
+		if vh < 1.0 {
+			return;
+		}
 		let vl_idx = self.cursor_visual_line_idx();
 		let cy = vl_idx as f32 * widget::line_height();
 		if cy < self.view.scroll_y {

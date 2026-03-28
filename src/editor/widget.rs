@@ -134,7 +134,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 	fn pixel_to_pos(&self, bounds: &Rectangle, px: f32, py: f32) -> CursorPos {
 		let ry = py - bounds.y - TOP_PAD + self.scroll_y;
 		let vl_idx = ((ry / LINE_H).floor().max(0.0) as usize)
-			.min(self.buffer.document.visual_lines.len().saturating_sub(1));
+			.min(self.buffer.document.visual_lines.len().saturating_sub(1usize));
 		if let Some(vl) = self.buffer.document.visual_lines.get(vl_idx) {
 			let lt = self.buffer.line_text(vl.doc_line);
 			let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
@@ -144,7 +144,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			let logical = line::logical_col_of(&lt, VisualCol(vcol));
 			self.buffer.click_to_pos(vl.doc_line, logical)
 		} else {
-			CursorPos::new(self.buffer.line_count().saturating_sub(1), CharIdx(0))
+			CursorPos::new(self.buffer.line_count().saturating_sub(1usize), CharIdx(0))
 		}
 	}
 }
@@ -1163,7 +1163,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for EditorWidget<'a, M
 					if pos.x >= b.x + gw - FOLD_COL_W && pos.x <= b.x + gw {
 						let ry = pos.y - b.y - TOP_PAD + self.scroll_y;
 						let vl_idx = ((ry / LINE_H).floor().max(0.0) as usize)
-							.min(self.buffer.document.visual_lines.len().saturating_sub(1));
+							.min(self.buffer.document.visual_lines.len().saturating_sub(1usize));
 						if let Some(vl) = self.buffer.document.visual_lines.get(vl_idx) {
 							let doc_line = vl.doc_line;
 							if self.buffer.document.folds.is_foldable(doc_line) {
@@ -1341,7 +1341,7 @@ pub fn pixel_to_pos(
 ) -> CursorPos {
 	let ry = py - bounds.y - TOP_PAD + scroll_y;
 	let vl_idx = ((ry / LINE_H).floor().max(0.0) as usize)
-		.min(buf.document.visual_lines.len().saturating_sub(1));
+		.min(buf.document.visual_lines.len().saturating_sub(1usize));
 	if let Some(vl) = buf.document.visual_lines.get(vl_idx) {
 		let lt = buf.line_text(vl.doc_line);
 		let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
@@ -1351,7 +1351,7 @@ pub fn pixel_to_pos(
 		let logical = line::logical_col_of(&lt, VisualCol(vcol));
 		buf.click_to_pos(vl.doc_line, logical)
 	} else {
-		CursorPos::new(buf.line_count().saturating_sub(1), CharIdx(0))
+		CursorPos::new(buf.line_count().saturating_sub(1usize), CharIdx(0))
 	}
 }
 
