@@ -5,6 +5,7 @@ use crate::editor::coords::{
 use crate::editor::folding::FoldState;
 use crate::editor::highlight::{SyntaxLanguage, SyntaxToken, TokenKind};
 use crate::editor::search::SearchState;
+use crate::editor::sql;
 use crate::editor::undo::{EditKind, UndoConfig, UndoStack};
 use crate::editor::wrap::{self, WrapConfig};
 use regex::{Captures, RegexBuilder};
@@ -255,6 +256,19 @@ impl Buffer {
 			.to_string()
 	}
 
+	pub fn current_block_text(&self) -> String {
+		match self.document.language {
+			SyntaxLanguage::Sql => self.current_sql_statement_text(),
+			_ => self.line_text(self.session.selection.head.line),
+		}
+	}
+
+	fn current_sql_statement_text(&self) -> String {
+		let text = self.full_text();
+		let cursor = self.pos_to_char(self.session.selection.head);
+		sql::current_statement_text(&text, cursor)
+	}
+
 	pub fn has_multiple_carets(&self) -> bool {
 		self.session.selection.is_caret()
 			&& !self.session.secondary_selections.is_empty()
@@ -310,19 +324,7 @@ impl Buffer {
 		let after_cursor: String = line.chars().skip(*caret.col).collect();
 
 		let extra = match self.document.language {
-			SyntaxLanguage::Sql => {
-				let trimmed = before_cursor.trim_end();
-				let next_trimmed = after_cursor.trim_start();
-				if trimmed.ends_with('(') && !next_trimmed.starts_with(')') {
-					if indent.contains('\t') && !indent.contains(' ') {
-						"\t"
-					} else {
-						"    "
-					}
-				} else {
-					""
-				}
-			}
+			SyntaxLanguage::Sql => sql::newline_extra_indent(&before_cursor, &after_cursor, &indent),
 			SyntaxLanguage::Txt => "",
 			SyntaxLanguage::Rust => {
 				let trimmed = before_cursor.trim_end();

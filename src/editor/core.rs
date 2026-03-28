@@ -108,6 +108,31 @@ impl CodeEditor {
 		self.buffer.document.rope.to_string()
 	}
 
+	/// Alias for `content`, useful for host integrations that think in terms of
+	/// "all code" vs selection/current block.
+	pub fn all_text(&self) -> String {
+		self.content()
+	}
+
+	/// Returns `true` when the primary selection is non-empty.
+	pub fn has_selection(&self) -> bool {
+		!self.buffer.session.selection.is_caret()
+	}
+
+	/// The currently selected text from the primary selection.
+	pub fn selected_text(&self) -> String {
+		self.buffer.selected_text()
+	}
+
+	/// The current executable block at the primary cursor.
+	///
+	/// For SQL this is the statement around the cursor, bounded by semicolons
+	/// while ignoring semicolons inside strings/comments. For other languages it
+	/// currently falls back to the current line.
+	pub fn current_block_text(&self) -> String {
+		self.buffer.current_block_text()
+	}
+
 	/// Replace the buffer content (resets scroll and undo history).
 	pub fn set_content(&mut self, content: &str) {
 		let lang = self.buffer.language();

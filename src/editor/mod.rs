@@ -9,6 +9,7 @@ pub mod coords;
 pub mod folding;
 pub mod highlight;
 pub mod search;
+pub mod sql;
 pub mod theme;
 pub mod undo;
 pub mod widget;
