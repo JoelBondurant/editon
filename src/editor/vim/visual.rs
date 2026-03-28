@@ -2,7 +2,7 @@ use iced::Task;
 use iced::keyboard::{self, Key};
 
 use super::VimMode;
-use super::super::coords::{CursorPos, Selection};
+use super::super::coords::{CharIdx, CursorPos, Selection};
 use super::super::core::{CodeEditor, EditorMsg};
 
 impl CodeEditor {
@@ -34,7 +34,7 @@ impl CodeEditor {
 						let chars: Vec<char> = lt.chars().collect();
 						let (_, se) = self.buffer.session.selection.ordered();
 						let mut e = se.col;
-						while e < chars.len() && chars[e].is_whitespace() {
+						while *e < chars.len() && chars[*e].is_whitespace() {
 							e += 1;
 						}
 						self.buffer.session.selection.head = CursorPos::new(se.line, e);
@@ -133,7 +133,7 @@ impl CodeEditor {
 						"y" => {
 							let yanked = if is_line {
 								let (s, e) = self.buffer.session.selection.ordered();
-								self.buffer.yank_lines(s.line, e.line - s.line + 1)
+								self.buffer.yank_lines(s.line, *e.line - *s.line + 1)
 							} else {
 								self.buffer.copy()
 							};
@@ -143,14 +143,14 @@ impl CodeEditor {
 							self.update_status();
 							self.ensure_cursor_visible();
 							if !yanked.is_empty() {
-								return iced::clipboard::write(yanked);
+								return iced::clipboard::write::<EditorMsg>(yanked).map(|_| EditorMsg::Noop);
 							}
 							return Task::none();
 						}
 						"d" | "x" => {
 							let yanked = if is_line {
 								let (s, e) = self.buffer.session.selection.ordered();
-								let lcount = e.line - s.line + 1;
+								let lcount = *e.line - *s.line + 1;
 								let y = self.buffer.yank_lines(s.line, lcount);
 								self.buffer.delete_lines(s.line, lcount);
 								y
@@ -161,7 +161,7 @@ impl CodeEditor {
 							self.update_status();
 							self.ensure_cursor_visible();
 							if !yanked.is_empty() {
-								return iced::clipboard::write(yanked);
+								return iced::clipboard::write::<EditorMsg>(yanked).map(|_| EditorMsg::Noop);
 							}
 							return Task::none();
 						}
@@ -201,7 +201,7 @@ impl CodeEditor {
 							} else {
 								self.vim.mode = VimMode::VisualLine;
 								let (s, e) = self.buffer.session.selection.ordered();
-								self.buffer.select_lines(e.line - s.line + 1);
+								self.buffer.select_lines(*e.line - *s.line + 1);
 							}
 						}
 						"u" => {
@@ -229,11 +229,11 @@ impl CodeEditor {
 		if self.vim.mode == VimMode::VisualLine {
 			let (s, e) = self.buffer.session.selection.ordered();
 			if self.buffer.session.selection.head >= self.buffer.session.selection.anchor {
-				self.buffer.session.selection.anchor = CursorPos::new(s.line, 0);
+				self.buffer.session.selection.anchor = CursorPos::new(s.line, CharIdx(0));
 				self.buffer.session.selection.head =
 					CursorPos::new(e.line, self.buffer.line_len(e.line));
 			} else {
-				self.buffer.session.selection.head = CursorPos::new(s.line, 0);
+				self.buffer.session.selection.head = CursorPos::new(s.line, CharIdx(0));
 				self.buffer.session.selection.anchor =
 					CursorPos::new(e.line, self.buffer.line_len(e.line));
 			}
@@ -333,7 +333,7 @@ impl CodeEditor {
 						"V" => {
 							self.vim.mode = VimMode::VisualLine;
 							let (s, e) = self.buffer.session.selection.ordered();
-							self.buffer.select_lines(e.line - s.line + 1);
+							self.buffer.select_lines(*e.line - *s.line + 1);
 						}
 						"I" => {
 							let (s, e) = self.buffer.session.selection.ordered();

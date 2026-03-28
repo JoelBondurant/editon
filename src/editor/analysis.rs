@@ -2,15 +2,15 @@ use std::collections::BTreeMap;
 
 use ropey::Rope;
 
-use super::coords::document;
+use super::coords::{CharIdx, LineIdx, document};
 use super::folding::{FoldRegion, FoldState};
 use super::highlight::{Highlighter, SyntaxLanguage, SyntaxToken, TokenKind};
 
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
-	pub line: usize,
-	pub col_start: usize,
-	pub col_end: usize,
+	pub line: LineIdx,
+	pub col_start: CharIdx,
+	pub col_end: CharIdx,
 	pub message: String,
 }
 
@@ -20,7 +20,7 @@ pub struct AnalysisSnapshot {
 	pub language: SyntaxLanguage,
 	pub tokens: Vec<SyntaxToken>,
 	pub diagnostics: Vec<Diagnostic>,
-	pub fold_regions: BTreeMap<usize, FoldRegion>,
+	pub fold_regions: BTreeMap<LineIdx, FoldRegion>,
 }
 
 pub fn analyze(version: u64, language: SyntaxLanguage, text: String) -> AnalysisSnapshot {
@@ -44,15 +44,15 @@ fn detect_fold_regions(
 	language: SyntaxLanguage,
 	text: &str,
 	tree: Option<&tree_sitter::Tree>,
-) -> BTreeMap<usize, FoldRegion> {
+) -> BTreeMap<LineIdx, FoldRegion> {
 	let rope = Rope::from_str(text);
-	let line_count = rope.len_lines().max(1);
+	let line_count = LineIdx(rope.len_lines().max(1));
 	let mut folds = FoldState::new();
-	let mut line_text = |line: usize| {
-		if line >= rope.len_lines() {
+	let mut line_text = |line: LineIdx| {
+		if *line >= rope.len_lines() {
 			return String::new();
 		}
-		let s: String = rope.line(line).chars().collect();
+		let s: String = rope.line(*line).chars().collect();
 		s.trim_end_matches('\n').trim_end_matches('\r').to_string()
 	};
 	folds.detect_regions(tree, language, line_count, &mut line_text);
@@ -82,7 +82,7 @@ fn collect_diagnostics(
 fn collect_sql_diagnostics(text: &str, tokens: &[SyntaxToken]) -> Vec<Diagnostic> {
 	let rope = Rope::from_str(text);
 	let mut diagnostics = Vec::new();
-	let mut paren_stack: Vec<(usize, usize)> = Vec::new();
+	let mut paren_stack: Vec<(LineIdx, CharIdx)> = Vec::new();
 	let mut at_stmt_start = true;
 
 	for tok in tokens {
@@ -168,7 +168,7 @@ fn walk_errors<'t>(node: tree_sitter::Node<'t>, rope: &Rope, diagnostics: &mut V
 			document::point_to_char_pos(rope, node.start_position(), |line| line_text(rope, line));
 		let end =
 			document::point_to_char_pos(rope, node.end_position(), |line| line_text(rope, line));
-		let snippet = if start.line < rope.len_lines().max(1) {
+		let snippet = if *start.line < rope.len_lines().max(1) {
 			let end_col = if start.line == end.line {
 				end.col
 			} else {
@@ -206,23 +206,23 @@ fn walk_errors<'t>(node: tree_sitter::Node<'t>, rope: &Rope, diagnostics: &mut V
 	}
 }
 
-fn line_text(rope: &Rope, line: usize) -> String {
-	if line >= rope.len_lines() {
+fn line_text(rope: &Rope, line: LineIdx) -> String {
+	if *line >= rope.len_lines() {
 		return String::new();
 	}
-	let s: String = rope.line(line).chars().collect();
+	let s: String = rope.line(*line).chars().collect();
 	s.trim_end_matches('\n').trim_end_matches('\r').to_string()
 }
 
-fn line_len(rope: &Rope, line: usize) -> usize {
-	line_text(rope, line).chars().count()
+fn line_len(rope: &Rope, line: LineIdx) -> CharIdx {
+	CharIdx(line_text(rope, line).chars().count())
 }
 
-fn line_slice(rope: &Rope, line: usize, start_col: usize, end_col: usize) -> String {
+fn line_slice(rope: &Rope, line: LineIdx, start_col: CharIdx, end_col: CharIdx) -> String {
 	line_text(rope, line)
 		.chars()
-		.skip(start_col)
-		.take(end_col.saturating_sub(start_col))
+		.skip(*start_col)
+		.take((*end_col).saturating_sub(*start_col))
 		.collect()
 }
 

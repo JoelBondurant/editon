@@ -9,7 +9,7 @@ use iced::{Color, Element, Event, Length, Pixels, Point, Rectangle, Renderer, Si
 use std::sync::OnceLock;
 
 use super::buffer::{Buffer, TokenSpan};
-use super::coords::{CursorPos, TAB_WIDTH, line};
+use super::coords::{CharIdx, CursorPos, LineIdx, VisualCol, TAB_WIDTH, line};
 use super::highlight::TokenKind;
 use super::theme::EditorTheme;
 use super::wrap::VisualLine;
@@ -67,7 +67,7 @@ pub struct EditorWidget<'a, Message> {
 	block_cursor: bool,
 	show_whitespace: bool,
 	/// Visual block selection: (top_line, bottom_line, left_col, right_col inclusive)
-	visual_block: Option<(usize, usize, usize, usize)>,
+	visual_block: Option<(LineIdx, LineIdx, CharIdx, CharIdx)>,
 }
 
 impl<'a, Message> EditorWidget<'a, Message> {
@@ -109,7 +109,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		self.show_whitespace = v;
 		self
 	}
-	pub fn visual_block(mut self, v: Option<(usize, usize, usize, usize)>) -> Self {
+	pub fn visual_block(mut self, v: Option<(LineIdx, LineIdx, CharIdx, CharIdx)>) -> Self {
 		self.visual_block = v;
 		self
 	}
@@ -140,11 +140,11 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
 			let char_w = char_width();
 			let rx = px - bounds.x - self.text_x() + self.scroll_x;
-			let vcol = (rx / char_w).round().max(0.0) as usize + vl_vcol_off;
-			let logical = line::logical_col_of(&lt, vcol);
+			let vcol = (rx / char_w).round().max(0.0) as usize + *vl_vcol_off;
+			let logical = line::logical_col_of(&lt, VisualCol(vcol));
 			self.buffer.click_to_pos(vl.doc_line, logical)
 		} else {
-			CursorPos::new(self.buffer.line_count().saturating_sub(1), 0)
+			CursorPos::new(self.buffer.line_count().saturating_sub(1), CharIdx(0))
 		}
 	}
 }
@@ -196,7 +196,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				if y + LINE_H < b.y || y > b.y + editor_h {
 					continue;
 				}
-				self.draw_line_gutter(renderer, b, gw, vl.doc_line, y, active, vl.is_first);
+				self.draw_line_gutter(renderer, b, gw, *vl.doc_line, y, *active, vl.is_first);
 			}
 		}
 
@@ -216,8 +216,8 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					if y + LINE_H < b.y || y > b.y + editor_h {
 						continue;
 					}
-					self.draw_line_highlights(renderer, b, gw, tx, vl.doc_line, y, active, st, vl);
-					self.draw_line_tokens(renderer, b, tx, vl.doc_line, y, vl);
+					self.draw_line_highlights(renderer, b, gw, tx, *vl.doc_line, y, *active, st, vl);
+					self.draw_line_tokens(renderer, b, tx, *vl.doc_line, y, vl);
 				}
 			}
 		}
@@ -300,8 +300,8 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			nc,
 			gw,
 		);
-		if self.buffer.document.folds.is_foldable(li) {
-			let collapsed = self.buffer.document.folds.is_collapsed_start(li);
+		if self.buffer.document.folds.is_foldable(LineIdx(li)) {
+			let collapsed = self.buffer.document.folds.is_collapsed_start(LineIdx(li));
 			draw_text(
 				renderer,
 				if collapsed { "▶" } else { "▼" },
@@ -311,7 +311,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				FOLD_COL_W,
 			);
 		}
-		if self.buffer.document.folds.is_collapsed_start(li) {
+		if self.buffer.document.folds.is_collapsed_start(LineIdx(li)) {
 			fill(
 				renderer,
 				Rectangle {
@@ -328,7 +328,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			.document
 			.diagnostics
 			.iter()
-			.any(|d| d.line == li)
+			.any(|d| *d.line == li)
 		{
 			fill_r(
 				renderer,
@@ -358,7 +358,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 	) {
 		let th = self.theme;
 		let char_w = char_width();
-		let lt = self.buffer.line_text(li);
+		let lt = self.buffer.line_text(LineIdx(li));
 		// Visual column offset of the start of this visual line within the doc line.
 		let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
 
@@ -378,10 +378,10 @@ impl<'a, Message> EditorWidget<'a, Message> {
 
 		// Indent guides: only relevant on first visual line of a doc line.
 		if vl.is_first {
-			for &vcol in &self.buffer.indent_guides(li) {
+			for &vcol in &self.buffer.indent_guides(LineIdx(li)) {
 				let guide_abs = vcol.saturating_sub(TAB_WIDTH);
-				if guide_abs >= vl_vcol_off {
-					let gx = b.x + tx + ((guide_abs - vl_vcol_off) as f32 * char_w) - self.scroll_x;
+				if guide_abs >= *vl_vcol_off {
+					let gx = b.x + tx + ((guide_abs - *vl_vcol_off) as f32 * char_w) - self.scroll_x;
 					let c = if li == active {
 						th.indent_guide_active
 					} else {
@@ -405,13 +405,13 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		if self.buffer.session.search.is_open {
 			let line_len = lt.chars().count();
 			for (i, m) in self.buffer.session.search.matches.iter().enumerate() {
-				if m.line == li && m.col_start < vl.col_end && m.col_end > vl.col_start {
-					let ms = m.col_start.max(vl.col_start).min(line_len);
-					let me = m.col_end.min(vl.col_end).min(line_len);
-					let mvs = line::visual_col_of(&lt, ms).saturating_sub(vl_vcol_off);
-					let mve = line::visual_col_of(&lt, me).saturating_sub(vl_vcol_off);
-					let mx = b.x + tx + (mvs as f32 * char_w) - self.scroll_x;
-					let mw = ((mve - mvs) as f32 * char_w).max(char_w);
+				if *m.line == li && m.col_start < vl.col_end && m.col_end > vl.col_start {
+					let ms = m.col_start.max(vl.col_start).min(CharIdx(line_len));
+					let me = m.col_end.min(vl.col_end).min(CharIdx(line_len));
+					let mvs = line::visual_col_of(&lt, ms).saturating_sub(*vl_vcol_off);
+					let mve = line::visual_col_of(&lt, me).saturating_sub(*vl_vcol_off);
+					let mx = b.x + tx + (*mvs as f32 * char_w) - self.scroll_x;
+					let mw = ((*mve - *mvs) as f32 * char_w).max(char_w);
 					let c = if i == self.buffer.session.search.current_match {
 						th.search_current_bg
 					} else {
@@ -432,16 +432,16 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		}
 
 		if let Some((top, bottom, left_col, right_col)) = self.visual_block {
-			if li >= top && li <= bottom {
+			if LineIdx(li) >= top && LineIdx(li) <= bottom {
 				let line_len = lt.chars().count();
-				if left_col < vl.col_end && right_col + 1 > vl.col_start {
-					let vcs = line::visual_col_of(&lt, left_col.max(vl.col_start).min(line_len))
-						.saturating_sub(vl_vcol_off);
+				if left_col < vl.col_end && (right_col + 1) > vl.col_start {
+					let vcs = line::visual_col_of(&lt, left_col.max(vl.col_start).min(CharIdx(line_len)))
+						.saturating_sub(*vl_vcol_off);
 					let vce =
-						line::visual_col_of(&lt, (right_col + 1).min(vl.col_end).min(line_len))
-							.saturating_sub(vl_vcol_off);
-					let sx = b.x + tx + (vcs as f32 * char_w) - self.scroll_x;
-					let sw = ((vce - vcs) as f32 * char_w).max(char_w * 0.5);
+						line::visual_col_of(&lt, (right_col + 1).min(vl.col_end).min(CharIdx(line_len)))
+							.saturating_sub(*vl_vcol_off);
+					let sx = b.x + tx + (*vcs as f32 * char_w) - self.scroll_x;
+					let sw = ((*vce - *vcs) as f32 * char_w).max(char_w * 0.5);
 					fill(
 						renderer,
 						Rectangle {
@@ -462,26 +462,26 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					continue;
 				}
 				let (ss, se) = sel.ordered();
-				if li < ss.line || li > se.line {
+				if *ss.line > li || *se.line < li {
 					continue;
 				}
 				let line_len = lt.chars().count();
-				let raw_start = if li == ss.line { ss.col } else { 0 };
-				let raw_end = if li == se.line { se.col } else { line_len };
+				let raw_start = if *ss.line == li { ss.col } else { CharIdx(0) };
+				let raw_end = if *se.line == li { se.col } else { CharIdx(line_len) };
 				if raw_start < vl.col_end && raw_end > vl.col_start {
-					let clip_start = raw_start.max(vl.col_start).min(line_len);
-					let clip_end = raw_end.min(vl.col_end).min(line_len);
-					let vcs = line::visual_col_of(&lt, clip_start).saturating_sub(vl_vcol_off);
+					let clip_start = raw_start.max(vl.col_start).min(CharIdx(line_len));
+					let clip_end = raw_end.min(vl.col_end).min(CharIdx(line_len));
+					let vcs = line::visual_col_of(&lt, clip_start).saturating_sub(*vl_vcol_off);
 					let vce = if raw_end > vl.col_end {
-						let end_abs = line::visual_col_of(&lt, vl.col_end.min(line_len))
-							.saturating_sub(vl_vcol_off);
-						end_abs + if li < se.line { 1 } else { 0 }
+						let end_abs = line::visual_col_of(&lt, vl.col_end.min(CharIdx(line_len)))
+							.saturating_sub(*vl_vcol_off);
+						*end_abs + if *se.line > li { 1 } else { 0 }
 					} else {
-						line::visual_col_of(&lt, clip_end).saturating_sub(vl_vcol_off)
+						*line::visual_col_of(&lt, clip_end).saturating_sub(*vl_vcol_off)
 					};
-					if vce > vcs {
-						let sx = b.x + tx + (vcs as f32 * char_w) - self.scroll_x;
-						let sw = ((vce - vcs) as f32 * char_w).max(char_w * 0.5);
+					if vce > *vcs {
+						let sx = b.x + tx + (*vcs as f32 * char_w) - self.scroll_x;
+						let sw = ((vce - *vcs) as f32 * char_w).max(char_w * 0.5);
 						fill(
 							renderer,
 							Rectangle {
@@ -500,10 +500,10 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		// Bracket matching: only when bracket is within this visual line's byte range.
 		if let Some(ref bm) = self.buffer.session.matched_bracket {
 			for &(bl, bc) in &[(bm.open_line, bm.open_col), (bm.close_line, bm.close_col)] {
-				if bl == li && bc >= vl.col_start && bc < vl.col_end {
+				if bl == LineIdx(li) && bc >= vl.col_start && bc < vl.col_end {
 					let blt = self.buffer.line_text(bl);
-					let bvcol = line::visual_col_of(&blt, bc).saturating_sub(vl_vcol_off);
-					let bx = b.x + tx + (bvcol as f32 * char_w) - self.scroll_x;
+					let bvcol = line::visual_col_of(&blt, bc).saturating_sub(*vl_vcol_off);
+					let bx = b.x + tx + (*bvcol as f32 * char_w) - self.scroll_x;
 					fill(
 						renderer,
 						Rectangle {
@@ -558,16 +558,16 @@ impl<'a, Message> EditorWidget<'a, Message> {
 	) {
 		let th = self.theme;
 		let char_w = char_width();
-		let lt = self.buffer.line_text(li);
+		let lt = self.buffer.line_text(LineIdx(li));
 		let line_len = lt.chars().count();
 		let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
 		let render_start = vl.col_start;
-		let render_end = vl.col_end.min(line_len);
+		let render_end = vl.col_end.min(CharIdx(line_len));
 
 		let spans = self
 			.buffer
-			.token_spans_for_line(li, render_start, render_end);
-		let mut render: Vec<(usize, usize, TokenKind)> = Vec::new();
+			.token_spans_for_line(LineIdx(li), render_start, render_end);
+		let mut render: Vec<(CharIdx, CharIdx, TokenKind)> = Vec::new();
 		let mut cur = render_start;
 		for &TokenSpan {
 			col_start: s,
@@ -591,7 +591,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		if cur < render_end {
 			render.push((cur, render_end, TokenKind::Plain));
 		}
-		let mut merged: Vec<(usize, usize, TokenKind)> = Vec::with_capacity(render.len());
+		let mut merged: Vec<(CharIdx, CharIdx, TokenKind)> = Vec::with_capacity(render.len());
 		for (start, end, kind) in render {
 			if let Some((_, last_end, last_kind)) = merged.last_mut()
 				&& *last_kind == kind
@@ -613,12 +613,12 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			if start >= render_end {
 				break;
 			}
-			let sl = self.buffer.line_slice(li, start, end);
+			let sl = self.buffer.line_slice(LineIdx(li), start, end);
 			if sl.is_empty() {
 				continue;
 			}
 			let color = token_color(&kind, th);
-			let mut vcol = line::visual_col_of(&lt, start);
+			let mut vcol: VisualCol = line::visual_col_of(&lt, start);
 			let mut seg = String::new();
 			let mut seg_vcol = vcol;
 			let mut char_pos = start;
@@ -628,7 +628,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 						draw_text(
 							renderer,
 							&seg,
-							b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
+							b.x + tx + ((*seg_vcol.saturating_sub(*vl_vcol_off)) as f32 * char_w)
 								- self.scroll_x,
 							y,
 							color,
@@ -640,21 +640,21 @@ impl<'a, Message> EditorWidget<'a, Message> {
 						draw_text(
 							renderer,
 							"▸",
-							b.x + tx + ((vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
+							b.x + tx + ((*vcol.saturating_sub(*vl_vcol_off)) as f32 * char_w)
 								- self.scroll_x,
 							y,
 							ws_color,
 							char_w,
 						);
 					}
-					vcol = (vcol / TAB_WIDTH + 1) * TAB_WIDTH;
+					vcol = VisualCol((*vcol / TAB_WIDTH + 1) * TAB_WIDTH);
 					seg_vcol = vcol;
 				} else if self.show_whitespace && ch == ' ' {
 					if !seg.is_empty() {
 						draw_text(
 							renderer,
 							&seg,
-							b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
+							b.x + tx + ((*seg_vcol.saturating_sub(*vl_vcol_off)) as f32 * char_w)
 								- self.scroll_x,
 							y,
 							color,
@@ -662,11 +662,11 @@ impl<'a, Message> EditorWidget<'a, Message> {
 						);
 						seg.clear();
 					}
-					let glyph = if char_pos >= trail_start { "~" } else { "␣" };
+					let glyph = if *char_pos >= trail_start { "~" } else { "␣" };
 					draw_text(
 						renderer,
 						glyph,
-						b.x + tx + ((vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
+						b.x + tx + ((*vcol.saturating_sub(*vl_vcol_off)) as f32 * char_w)
 							- self.scroll_x,
 						y,
 						ws_color,
@@ -684,7 +684,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				draw_text(
 					renderer,
 					&seg,
-					b.x + tx + ((seg_vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
+					b.x + tx + ((*seg_vcol.saturating_sub(*vl_vcol_off)) as f32 * char_w)
 						- self.scroll_x,
 					y,
 					color,
@@ -694,16 +694,16 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		}
 
 		// EOL marker, fold indicator, and diagnostics only on the last visual line for this doc line.
-		let is_last_vl = vl.col_end >= line_len;
+		let is_last_vl = vl.col_end >= CharIdx(line_len);
 		if is_last_vl {
 			if self.show_whitespace {
-				let eol_vcol = line::chars_with_vcols(&lt)
+				let eol_vcol: VisualCol = line::chars_with_vcols(&lt)
 					.last()
-					.map_or(0, |(_, vc)| vc + 1);
+					.map_or(VisualCol(0), |(_, vc)| vc + 1);
 				draw_text(
 					renderer,
 					"¬",
-					b.x + tx + ((eol_vcol.saturating_sub(vl_vcol_off)) as f32 * char_w)
+					b.x + tx + ((*eol_vcol.saturating_sub(*vl_vcol_off)) as f32 * char_w)
 						- self.scroll_x,
 					y,
 					Color {
@@ -713,16 +713,16 @@ impl<'a, Message> EditorWidget<'a, Message> {
 					char_w,
 				);
 			}
-			if self.buffer.document.folds.is_collapsed_start(li) {
-				let hc = self.buffer.document.folds.hidden_count(li);
+			if self.buffer.document.folds.is_collapsed_start(LineIdx(li)) {
+				let hc = self.buffer.document.folds.hidden_count(LineIdx(li));
 				if hc > 0 {
-					let eol_vcol = line::chars_with_vcols(&lt)
+					let eol_vcol: VisualCol = line::chars_with_vcols(&lt)
 						.last()
-						.map_or(0, |(_, vc)| vc + 1);
+						.map_or(VisualCol(0), |(_, vc)| vc + 1);
 					draw_text(
 						renderer,
 						&format!(" ⋯ {} lines", hc),
-						b.x + tx + ((eol_vcol.saturating_sub(vl_vcol_off)) as f32 * char_w) + 8.0
+						b.x + tx + ((*eol_vcol.saturating_sub(*vl_vcol_off)) as f32 * char_w) + 8.0
 							- self.scroll_x,
 						y,
 						th.comment,
@@ -733,14 +733,14 @@ impl<'a, Message> EditorWidget<'a, Message> {
 		}
 
 		for diag in &self.buffer.document.diagnostics {
-			if diag.line == li && diag.col_start < vl.col_end && diag.col_end > vl.col_start {
-				let ds = diag.col_start.max(vl.col_start).min(line_len);
-				let de = diag.col_end.min(render_end).min(line_len);
+			if *diag.line == li && diag.col_start < vl.col_end && diag.col_end > vl.col_start {
+				let ds = diag.col_start.max(vl.col_start).min(CharIdx(line_len));
+				let de = diag.col_end.min(render_end).min(CharIdx(line_len));
 				if ds < de {
-					let uvs = line::visual_col_of(&lt, ds).saturating_sub(vl_vcol_off);
-					let uve = line::visual_col_of(&lt, de).saturating_sub(vl_vcol_off);
-					let ux = b.x + tx + (uvs as f32 * char_w) - self.scroll_x;
-					let uw = ((uve - uvs) as f32 * char_w).max(char_w);
+					let uvs = line::visual_col_of(&lt, ds).saturating_sub(*vl_vcol_off);
+					let uve = line::visual_col_of(&lt, de).saturating_sub(*vl_vcol_off);
+					let ux = b.x + tx + (*uvs as f32 * char_w) - self.scroll_x;
+					let uw = ((*uve - *uvs) as f32 * char_w).max(char_w);
 					let uy = y + LINE_H - ERR_THICK - 1.0;
 					let seg: f32 = 4.0;
 					let mut sx = ux;
@@ -797,17 +797,17 @@ impl<'a, Message> EditorWidget<'a, Message> {
 						.iter()
 						.position(|vl| vl.doc_line == caret.line)
 				})
-				.unwrap_or(caret.line);
+				.unwrap_or(*caret.line);
 			let vl_vcol_off = self
 				.buffer
 				.document
 				.visual_lines
 				.get(vl_idx)
 				.map(|vl| line::visual_col_of(&clt, vl.col_start))
-				.unwrap_or(0);
+				.unwrap_or(VisualCol(0));
 
 			let cy = b.y + TOP_PAD + (vl_idx as f32 * LINE_H) - self.scroll_y;
-			let cx = b.x + tx + ((cvcol_abs.saturating_sub(vl_vcol_off)) as f32 * char_w)
+			let cx = b.x + tx + ((*cvcol_abs.saturating_sub(*vl_vcol_off)) as f32 * char_w)
 				- self.scroll_x;
 			if cy <= b.y - LINE_H || cy >= b.y + editor_h {
 				return;
@@ -866,7 +866,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			},
 			th.minimap_bg,
 		);
-		let total_h = self.buffer.line_count() as f32 * MINIMAP_LINE_H;
+		let total_h = *self.buffer.line_count() as f32 * MINIMAP_LINE_H;
 		if total_h > 0.0 {
 			let scale = MINIMAP_LINE_H / LINE_H;
 			let vp_h = (editor_h * scale).min(editor_h).max(20.0);
@@ -882,11 +882,12 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				th.minimap_viewport,
 			);
 		}
-		for li in 0..self.buffer.line_count() {
+		for li_raw in 0..*self.buffer.line_count() {
+			let li = LineIdx(li_raw);
 			if self.buffer.document.folds.is_hidden(li) {
 				continue;
 			}
-			let my = b.y + li as f32 * MINIMAP_LINE_H;
+			let my = b.y + li_raw as f32 * MINIMAP_LINE_H;
 			if my > b.y + editor_h {
 				break;
 			}
@@ -898,15 +899,15 @@ impl<'a, Message> EditorWidget<'a, Message> {
 				col_start: s,
 				col_end: e,
 				kind,
-			} in self.buffer.token_spans_for_line(li, 0, lt.chars().count())
+			} in self.buffer.token_spans_for_line(li, CharIdx(0), CharIdx(lt.chars().count()))
 			{
-				let tw = (e - s) as f32 * MINIMAP_CHAR_W;
+				let tw = (*e - *s) as f32 * MINIMAP_CHAR_W;
 				if tw > 0.5 {
 					let c = token_color(&kind, th);
 					fill(
 						renderer,
 						Rectangle {
-							x: mx + 4.0 + s as f32 * MINIMAP_CHAR_W,
+							x: mx + 4.0 + *s as f32 * MINIMAP_CHAR_W,
 							y: my,
 							width: tw.min(MINIMAP_W - 8.0),
 							height: MINIMAP_LINE_H,
@@ -1008,10 +1009,10 @@ impl<'a, Message> EditorWidget<'a, Message> {
 							&& vl.col_start <= diag.col_start
 							&& diag.col_start <= vl.col_end
 					})
-					.unwrap_or(diag.line);
+					.unwrap_or(*diag.line);
 				let dy =
 					b.y + TOP_PAD + (diag_vl_idx as f32 * LINE_H) - self.scroll_y + LINE_H + 4.0;
-				let dx = b.x + tx + (diag.col_start as f32 * char_w) - self.scroll_x;
+				let dx = b.x + tx + (*diag.col_start as f32 * char_w) - self.scroll_x;
 				let tw = (diag.message.len() as f32 * char_w * 0.62)
 					.min(400.0)
 					.max(150.0);
@@ -1166,7 +1167,7 @@ impl<'a, Message: Clone> Widget<Message, Theme, Renderer> for EditorWidget<'a, M
 						if let Some(vl) = self.buffer.document.visual_lines.get(vl_idx) {
 							let doc_line = vl.doc_line;
 							if self.buffer.document.folds.is_foldable(doc_line) {
-								shell.publish((self.on_action)(EditorAction::ToggleFold(doc_line)));
+								shell.publish((self.on_action)(EditorAction::ToggleFold(*doc_line)));
 							}
 						}
 						shell.capture_event();
@@ -1346,11 +1347,11 @@ pub fn pixel_to_pos(
 		let vl_vcol_off = line::visual_col_of(&lt, vl.col_start);
 		let char_w = char_width();
 		let rx = px - bounds.x - gutter_w - LEFT_PAD + scroll_x;
-		let vcol = (rx / char_w).round().max(0.0) as usize + vl_vcol_off;
-		let logical = line::logical_col_of(&lt, vcol);
+		let vcol = (rx / char_w).round().max(0.0) as usize + *vl_vcol_off;
+		let logical = line::logical_col_of(&lt, VisualCol(vcol));
 		buf.click_to_pos(vl.doc_line, logical)
 	} else {
-		CursorPos::new(buf.line_count().saturating_sub(1), 0)
+		CursorPos::new(buf.line_count().saturating_sub(1), CharIdx(0))
 	}
 }
 

@@ -2,7 +2,7 @@ use iced::Task;
 use iced::keyboard::{self, Key};
 
 use super::{VimMode, NormalEdit};
-use super::super::coords::{CursorPos, Selection};
+use super::super::coords::{CharIdx, CursorPos, Selection};
 use super::super::core::{CodeEditor, EditorMsg};
 use super::super::widget;
 
@@ -156,7 +156,7 @@ impl CodeEditor {
 							let last =
 								(line + count - 1).min(self.buffer.line_count().saturating_sub(1));
 							self.buffer.session.selection = Selection {
-								anchor: CursorPos::new(line, 0),
+								anchor: CursorPos::new(line, CharIdx(0)),
 								head: CursorPos::new(last, self.buffer.line_len(last)),
 							};
 							if op == '>' {
@@ -165,7 +165,7 @@ impl CodeEditor {
 								self.buffer.dedent_lines();
 							}
 							self.buffer.session.selection =
-								Selection::caret(CursorPos::new(line, 0));
+								Selection::caret(CursorPos::new(line, CharIdx(0)));
 							self.update_status();
 							self.ensure_cursor_visible();
 							return Task::none();
@@ -195,24 +195,24 @@ impl CodeEditor {
 								self.vim.last_edit = Some(NormalEdit::LineOp { op: 'd', count });
 								self.update_status();
 								self.ensure_cursor_visible();
-								iced::clipboard::write(yanked)
+								iced::clipboard::write::<EditorMsg>(yanked).map(|_| EditorMsg::Noop)
 							}
 							('y', "y") => {
 								let line = self.buffer.session.selection.head.line;
 								let yanked = self.buffer.yank_lines(line, count);
 								self.update_status();
-								iced::clipboard::write(yanked)
+								iced::clipboard::write::<EditorMsg>(yanked).map(|_| EditorMsg::Noop)
 							}
 							('c', "c") => {
 								let line = self.buffer.session.selection.head.line;
 								let len = self.buffer.line_len(line);
 								self.buffer.session.selection = Selection {
-									anchor: CursorPos::new(line, 0),
+									anchor: CursorPos::new(line, CharIdx(0)),
 									head: CursorPos::new(line, len),
 								};
 								let _ = self.buffer.cut();
 								self.buffer.session.selection =
-									Selection::caret(CursorPos::new(line, 0));
+									Selection::caret(CursorPos::new(line, CharIdx(0)));
 								self.vim.last_edit = Some(NormalEdit::LineOp { op: 'c', count });
 								self.enter_insert_mode();
 								self.update_status();
@@ -282,7 +282,7 @@ impl CodeEditor {
 							for _ in 0..count {
 								let pos = self.buffer.session.selection.head;
 								let lt = self.buffer.line_text(pos.line);
-								if let Some(c) = lt.chars().nth(pos.col) {
+								if let Some(c) = lt.chars().nth(*pos.col) {
 									let toggled = if c.is_uppercase() {
 										c.to_lowercase().next().unwrap_or(c)
 									} else {

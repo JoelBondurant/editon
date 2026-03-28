@@ -1,6 +1,6 @@
 use ropey::Rope;
 
-use super::coords::Selection;
+use super::coords::{CharIdx, Selection};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EditKind {
@@ -13,7 +13,7 @@ pub enum EditKind {
 
 #[derive(Clone)]
 struct TextChange {
-	start: usize,
+	start: CharIdx,
 	deleted: String,
 	inserted: String,
 }
@@ -107,7 +107,7 @@ impl UndoStack {
 		self.merge_blocked = false;
 	}
 
-	pub fn record_change(&mut self, start: usize, deleted: String, inserted: String) {
+	pub fn record_change(&mut self, start: CharIdx, deleted: String, inserted: String) {
 		if deleted == inserted {
 			return;
 		}
@@ -147,9 +147,9 @@ impl UndoStack {
 		} else {
 			(change.inserted.chars().count(), change.deleted.as_str())
 		};
-		rope.remove(change.start..change.start + remove_len);
+		rope.remove(*change.start..*change.start + remove_len);
 		if !insert_text.is_empty() {
-			rope.insert(change.start, insert_text);
+			rope.insert(*change.start, insert_text);
 		}
 	}
 

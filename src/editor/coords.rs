@@ -2,19 +2,101 @@ use std::cmp::Ordering;
 
 pub const TAB_WIDTH: usize = 4;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+macro_rules! impl_index_behavior {
+	($name:ident) => {
+		impl std::ops::Deref for $name {
+			type Target = usize;
+			fn deref(&self) -> &Self::Target {
+				&self.0
+			}
+		}
+
+		impl std::ops::Add<usize> for $name {
+			type Output = Self;
+			fn add(self, rhs: usize) -> Self::Output {
+				$name(self.0 + rhs)
+			}
+		}
+
+		impl std::ops::AddAssign<usize> for $name {
+			fn add_assign(&mut self, rhs: usize) {
+				self.0 += rhs;
+			}
+		}
+
+		impl std::ops::Sub<usize> for $name {
+			type Output = Self;
+			fn sub(self, rhs: usize) -> Self::Output {
+				$name(self.0.saturating_sub(rhs))
+			}
+		}
+
+		impl std::ops::SubAssign<usize> for $name {
+			fn sub_assign(&mut self, rhs: usize) {
+				self.0 = self.0.saturating_sub(rhs);
+			}
+		}
+
+		impl std::ops::Add<Self> for $name {
+			type Output = Self;
+			fn add(self, rhs: Self) -> Self::Output {
+				$name(self.0 + rhs.0)
+			}
+		}
+
+		impl std::ops::Sub<Self> for $name {
+			type Output = Self;
+			fn sub(self, rhs: Self) -> Self::Output {
+				$name(self.0.saturating_sub(rhs.0))
+			}
+		}
+
+		impl std::fmt::Display for $name {
+			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+				write!(f, "{}", self.0)
+			}
+		}
+
+		impl From<usize> for $name {
+			fn from(v: usize) -> Self {
+				Self(v)
+			}
+		}
+	};
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct LineIdx(pub usize);
+impl_index_behavior!(LineIdx);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct CharIdx(pub usize);
+impl_index_behavior!(CharIdx);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct ByteIdx(pub usize);
+impl_index_behavior!(ByteIdx);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct VisualCol(pub usize);
+impl_index_behavior!(VisualCol);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CursorPos {
-	pub line: usize,
-	pub col: usize,
+	pub line: LineIdx,
+	pub col: CharIdx,
 }
 
 impl CursorPos {
-	pub fn new(line: usize, col: usize) -> Self {
-		Self { line, col }
+	pub fn new(line: impl Into<LineIdx>, col: impl Into<CharIdx>) -> Self {
+		Self {
+			line: line.into(),
+			col: col.into(),
+		}
 	}
 
 	pub fn zero() -> Self {
-		Self { line: 0, col: 0 }
+		Self::default()
 	}
 }
 
@@ -55,13 +137,12 @@ impl Selection {
 }
 
 pub mod line {
-	use super::TAB_WIDTH;
+	use super::{ByteIdx, CharIdx, VisualCol, TAB_WIDTH};
 
-	/// Logical col -> visual col. Tabs expand to the next TAB_WIDTH boundary.
-	pub fn visual_col_of(line: &str, logical_col: usize) -> usize {
+	pub fn visual_col_of(line: &str, logical_col: CharIdx) -> VisualCol {
 		let mut vcol = 0usize;
 		for (i, ch) in line.chars().enumerate() {
-			if i >= logical_col {
+			if i >= *logical_col {
 				break;
 			}
 			if ch == '\t' {
@@ -70,31 +151,29 @@ pub mod line {
 				vcol += 1;
 			}
 		}
-		vcol
+		VisualCol(vcol)
 	}
 
-	/// Visual col -> logical col. Snaps to the nearest character boundary.
-	pub fn logical_col_of(line: &str, target_vcol: usize) -> usize {
+	pub fn logical_col_of(line: &str, target_vcol: VisualCol) -> CharIdx {
 		let mut vcol = 0usize;
 		for (i, ch) in line.chars().enumerate() {
-			if vcol >= target_vcol {
-				return i;
+			if vcol >= *target_vcol {
+				return CharIdx(i);
 			}
 			if ch == '\t' {
 				let next = (vcol / TAB_WIDTH + 1) * TAB_WIDTH;
-				if target_vcol < next {
-					return i;
+				if *target_vcol < next {
+					return CharIdx(i);
 				}
 				vcol = next;
 			} else {
 				vcol += 1;
 			}
 		}
-		line.chars().count()
+		CharIdx(line.chars().count())
 	}
 
-	/// Iterate over line characters together with each character's starting visual column.
-	pub fn chars_with_vcols(line: &str) -> impl Iterator<Item = (char, usize)> + '_ {
+	pub fn chars_with_vcols(line: &str) -> impl Iterator<Item = (char, VisualCol)> + '_ {
 		let mut vcol = 0usize;
 		line.chars().map(move |ch| {
 			let start = vcol;
@@ -103,83 +182,86 @@ pub mod line {
 			} else {
 				vcol + 1
 			};
-			(ch, start)
+			(ch, VisualCol(start))
 		})
 	}
 
-	pub fn slice_chars(text: &str, start_col: usize, end_col: usize) -> String {
+	pub fn slice_chars(text: &str, start_col: CharIdx, end_col: CharIdx) -> String {
 		text.chars()
-			.skip(start_col)
-			.take(end_col.saturating_sub(start_col))
+			.skip(*start_col)
+			.take((*end_col).saturating_sub(*start_col))
 			.collect()
 	}
 
-	pub fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
-		text.char_indices()
-			.nth(char_idx)
-			.map(|(idx, _)| idx)
-			.unwrap_or(text.len())
+	pub fn char_to_byte_idx(text: &str, char_idx: CharIdx) -> ByteIdx {
+		ByteIdx(
+			text.char_indices()
+				.nth(*char_idx)
+				.map(|(idx, _)| idx)
+				.unwrap_or(text.len()),
+		)
 	}
 
-	pub fn byte_to_char_idx(text: &str, byte_idx: usize) -> usize {
+	pub fn byte_to_char_idx(text: &str, byte_idx: ByteIdx) -> CharIdx {
 		let mut char_count = 0;
 		for (i, _) in text.char_indices() {
-			if i >= byte_idx {
-				return char_count;
+			if i >= *byte_idx {
+				return CharIdx(char_count);
 			}
 			char_count += 1;
 		}
-		char_count
+		CharIdx(char_count)
 	}
 }
 
 pub mod document {
+	use super::{line, ByteIdx, CharIdx, CursorPos, LineIdx};
 	use ropey::Rope;
 	use tree_sitter::Point;
 
-	use super::{CursorPos, line};
-
 	pub fn clamp_pos(rope: &Rope, p: CursorPos) -> CursorPos {
 		let line_count = rope.len_lines().max(1);
-		let line = p.line.min(line_count.saturating_sub(1));
-		let col = p.col.min(line_len(rope, line));
-		CursorPos::new(line, col)
+		let line = (*p.line).min(line_count.saturating_sub(1));
+		let col = (*p.col).min(*line_len(rope, LineIdx(line)));
+		CursorPos::new(LineIdx(line), CharIdx(col))
 	}
 
 	pub fn pos_to_char(rope: &Rope, p: CursorPos) -> usize {
 		let clamped = clamp_pos(rope, p);
-		rope.line_to_char(clamped.line) + clamped.col
+		rope.line_to_char(*clamped.line) + *clamped.col
 	}
 
-	pub fn byte_to_char_col(rope: &Rope, byte: usize) -> (usize, usize) {
+	pub fn byte_to_char_col(rope: &Rope, byte: usize) -> (LineIdx, CharIdx) {
 		let char_idx = rope.byte_to_char(byte);
 		let line = rope.char_to_line(char_idx);
 		let col = char_idx - rope.line_to_char(line);
-		(line, col)
+		(LineIdx(line), CharIdx(col))
 	}
 
 	pub fn point_to_char_pos<F>(rope: &Rope, point: Point, mut line_text: F) -> CursorPos
 	where
-		F: FnMut(usize) -> String,
+		F: FnMut(LineIdx) -> String,
 	{
 		let line_count = rope.len_lines().max(1);
 		if point.row >= line_count {
-			return CursorPos::new(line_count.saturating_sub(1), 0);
+			return CursorPos::new(LineIdx(line_count.saturating_sub(1)), CharIdx(0));
 		}
-		let line = point.row;
+		let line = LineIdx(point.row);
 		let text = line_text(line);
-		let byte_col = point.column.min(text.len());
+		let byte_col = ByteIdx(point.column.min(text.len()));
 		CursorPos::new(line, line::byte_to_char_idx(&text, byte_col))
 	}
 
-	fn line_len(rope: &Rope, line: usize) -> usize {
-		if line >= rope.len_lines() {
-			return 0;
+	pub fn line_len(rope: &Rope, line: LineIdx) -> CharIdx {
+		if *line >= rope.len_lines() {
+			return CharIdx(0);
 		}
-		let text: String = rope.line(line).chars().collect();
-		text.trim_end_matches('\n')
-			.trim_end_matches('\r')
-			.chars()
-			.count()
+		let text: String = rope.line(*line).chars().collect();
+		CharIdx(
+			text.trim_end_matches('\n')
+				.trim_end_matches('\r')
+				.chars()
+				.count(),
+		)
 	}
 }

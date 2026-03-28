@@ -1,5 +1,7 @@
 use crate::editor::analysis::AnalysisSnapshot;
-use crate::editor::coords::{CursorPos, Selection, TAB_WIDTH, document, line};
+use crate::editor::coords::{
+	ByteIdx, CharIdx, CursorPos, LineIdx, Selection, TAB_WIDTH, document, line,
+};
 use crate::editor::folding::FoldState;
 use crate::editor::highlight::{SyntaxLanguage, SyntaxToken, TokenKind};
 use crate::editor::search::SearchState;
@@ -12,8 +14,8 @@ use super::state::{DocumentState, SessionState};
 
 #[derive(Debug, Clone, Copy)]
 pub struct TokenSpan {
-	pub col_start: usize,
-	pub col_end: usize,
+	pub col_start: CharIdx,
+	pub col_end: CharIdx,
 	pub kind: TokenKind,
 }
 
@@ -21,10 +23,10 @@ pub struct TokenSpan {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BracketPair {
-	pub open_line: usize,
-	pub open_col: usize,
-	pub close_line: usize,
-	pub close_col: usize,
+	pub open_line: LineIdx,
+	pub open_col: CharIdx,
+	pub close_line: LineIdx,
+	pub close_col: CharIdx,
 }
 
 #[derive(Clone, Copy)]
@@ -166,19 +168,12 @@ impl Buffer {
 		true
 	}
 
-	pub fn line_count(&self) -> usize {
-		self.document.rope.len_lines().max(1)
+	pub fn line_count(&self) -> LineIdx {
+		LineIdx(self.document.rope.len_lines().max(1))
 	}
 
-	pub fn line_len(&self, line: usize) -> usize {
-		if line >= self.document.rope.len_lines() {
-			return 0;
-		}
-		let s: String = self.document.rope.line(line).chars().collect();
-		s.trim_end_matches('\n')
-			.trim_end_matches('\r')
-			.chars()
-			.count()
+	pub fn line_len(&self, line: LineIdx) -> CharIdx {
+		document::line_len(&self.document.rope, line)
 	}
 
 	pub fn clamp_pos(&self, p: CursorPos) -> CursorPos {
@@ -189,37 +184,37 @@ impl Buffer {
 		document::pos_to_char(&self.document.rope, p)
 	}
 
-	pub fn line_text(&self, line: usize) -> String {
-		if line >= self.document.rope.len_lines() {
+	pub fn line_text(&self, line: LineIdx) -> String {
+		if *line >= self.document.rope.len_lines() {
 			return String::new();
 		}
-		let s: String = self.document.rope.line(line).chars().collect();
+		let s: String = self.document.rope.line(*line).chars().collect();
 		s.trim_end_matches('\n').trim_end_matches('\r').to_string()
 	}
 
-	pub fn line_slice(&self, line: usize, start_col: usize, end_col: usize) -> String {
+	pub fn line_slice(&self, line: LineIdx, start_col: CharIdx, end_col: CharIdx) -> String {
 		let text = self.line_text(line);
 		line::slice_chars(&text, start_col, end_col)
 	}
 
 	pub fn token_spans_for_line(
 		&self,
-		line: usize,
-		start_col: usize,
-		end_col: usize,
+		line: LineIdx,
+		start_col: CharIdx,
+		end_col: CharIdx,
 	) -> Vec<TokenSpan> {
 		let text = self.line_text(line);
-		let line_len = text.chars().count();
+		let line_len = CharIdx(text.chars().count());
 		let clipped_start = start_col.min(line_len);
 		let clipped_end = end_col.min(line_len);
 		if clipped_start >= clipped_end {
 			return Vec::new();
 		}
 
-		let line_byte_start = self.document.rope.line_to_byte(line);
+		let line_byte_start = self.document.rope.line_to_byte(*line);
 		let line_byte_end = line_byte_start + text.len();
-		let clip_byte_start = line_byte_start + line::char_to_byte_idx(&text, clipped_start);
-		let clip_byte_end = line_byte_start + line::char_to_byte_idx(&text, clipped_end);
+		let clip_byte_start = line_byte_start + *line::char_to_byte_idx(&text, clipped_start);
+		let clip_byte_end = line_byte_start + *line::char_to_byte_idx(&text, clipped_end);
 
 		let mut spans = Vec::new();
 		for tok in &self.document.tokens {
@@ -231,8 +226,8 @@ impl Buffer {
 			if byte_start >= byte_end {
 				continue;
 			}
-			let col_start = line::byte_to_char_idx(&text, byte_start - line_byte_start);
-			let col_end = line::byte_to_char_idx(&text, byte_end - line_byte_start);
+			let col_start = line::byte_to_char_idx(&text, ByteIdx(byte_start - line_byte_start));
+			let col_end = line::byte_to_char_idx(&text, ByteIdx(byte_end - line_byte_start));
 			if col_start < col_end {
 				spans.push(TokenSpan {
 					col_start,
@@ -301,7 +296,7 @@ impl Buffer {
 		self.refresh_bracket_match();
 	}
 
-	fn line_indent(&self, line: usize) -> String {
+	fn line_indent(&self, line: LineIdx) -> String {
 		self.line_text(line)
 			.chars()
 			.take_while(|c| c.is_whitespace())
@@ -311,14 +306,14 @@ impl Buffer {
 	fn char_at(&self, p: CursorPos) -> Option<char> {
 		self.line_text(self.clamp_pos(p).line)
 			.chars()
-			.nth(self.clamp_pos(p).col)
+			.nth(*self.clamp_pos(p).col)
 	}
 
 	fn char_before(&self, p: CursorPos) -> Option<char> {
-		if p.col == 0 {
+		if *p.col == 0 {
 			None
 		} else {
-			self.line_text(p.line).chars().nth(p.col - 1)
+			self.line_text(p.line).chars().nth(*p.col - 1)
 		}
 	}
 
@@ -466,7 +461,7 @@ impl Buffer {
 
 		let deleted = self.document.rope.slice(start..end).to_string();
 		self.undo_stack
-			.record_change(start, deleted, insert.to_string());
+			.record_change(CharIdx(start), deleted, insert.to_string());
 		self.document.rope.remove(start..end);
 		if !insert.is_empty() {
 			self.document.rope.insert(start, insert);
@@ -504,16 +499,12 @@ impl Buffer {
 		}
 	}
 
-	fn insert_at(&mut self, start: usize, insert: &str) {
-		self.replace_range(start, start, insert);
+	fn insert_char_at(&mut self, start: CharIdx, insert: &str) {
+		self.replace_range(*start, *start, insert);
 	}
 
-	fn insert_char_at(&mut self, start: usize, ch: char) {
-		self.replace_range(start, start, &ch.to_string());
-	}
-
-	fn remove_range(&mut self, start: usize, end: usize) {
-		self.replace_range(start, end, "");
+	fn remove_range(&mut self, start: CharIdx, end: CharIdx) {
+		self.replace_range(*start, *end, "");
 	}
 
 	pub fn undo(&mut self) {
@@ -554,25 +545,26 @@ impl Buffer {
 	/// Delete a rectangular block from `top..=bottom` lines, columns `left_col..right_col_excl`.
 	pub fn block_delete(
 		&mut self,
-		top: usize,
-		bottom: usize,
-		left_col: usize,
-		right_col_excl: usize,
+		top: LineIdx,
+		bottom: LineIdx,
+		left_col: CharIdx,
+		right_col_excl: CharIdx,
 	) {
 		if left_col >= right_col_excl {
 			return;
 		}
 		self.save_undo_boundary();
 		let bottom = bottom.min(self.line_count().saturating_sub(1));
-		for li in (top..=bottom).rev() {
+		for li_raw in (*top..=*bottom).rev() {
+			let li = LineIdx(li_raw);
 			let line_len = self.line_len(li);
 			if left_col >= line_len {
 				continue;
 			}
-			let ci_start = self.document.rope.line_to_char(li) + left_col;
-			let ci_end = self.document.rope.line_to_char(li) + right_col_excl.min(line_len);
+			let ci_start = self.document.rope.line_to_char(*li) + *left_col;
+			let ci_end = self.document.rope.line_to_char(*li) + (*right_col_excl).min(*line_len);
 			if ci_start < ci_end {
-				self.remove_range(ci_start, ci_end);
+				self.remove_range(CharIdx(ci_start), CharIdx(ci_end));
 			}
 		}
 		self.session.selection = Selection::caret(CursorPos::new(top, left_col));
@@ -581,7 +573,7 @@ impl Buffer {
 
 	/// Insert `text` at `col` on every line from `top+1..=bottom`, replicating a block insert.
 	/// The top line already has the text from normal insert-mode editing.
-	pub fn block_insert_text(&mut self, top: usize, bottom: usize, col: usize, text: &str) {
+	pub fn block_insert_text(&mut self, top: LineIdx, bottom: LineIdx, col: CharIdx, text: &str) {
 		if text.is_empty() {
 			return;
 		}
@@ -589,16 +581,17 @@ impl Buffer {
 		if bottom <= top {
 			return;
 		}
-		for li in (top + 1..=bottom).rev() {
+		for li_raw in (*top + 1..=*bottom).rev() {
+			let li = LineIdx(li_raw);
 			let line_len = self.line_len(li);
 			if col <= line_len {
-				let ci = self.document.rope.line_to_char(li) + col;
-				self.insert_at(ci, text);
+				let ci = self.document.rope.line_to_char(*li) + *col;
+				self.insert_char_at(CharIdx(ci), text);
 			} else {
 				// Pad with spaces to reach col, then insert
-				let pad: String = " ".repeat(col - line_len);
-				let ci = self.document.rope.line_to_char(li) + line_len;
-				self.insert_at(ci, &format!("{}{}", pad, text));
+				let pad: String = " ".repeat(*col - *line_len);
+				let ci = self.document.rope.line_to_char(*li) + *line_len;
+				self.insert_char_at(CharIdx(ci), &format!("{}{}", pad, text));
 			}
 		}
 		self.post_edit();
@@ -644,8 +637,9 @@ impl Buffer {
 					.filter(|&start| start != primary_start)
 					.collect();
 				for (start, end, _) in &ranges {
-					self.remove_range(*start, *end);
+					self.remove_range(CharIdx(*start), CharIdx(*end));
 				}
+
 				self.set_cursor_heads(primary_start, secondary);
 				self.post_edit();
 			}
@@ -701,7 +695,7 @@ impl Buffer {
 				let caret = if insert.contains('\n') {
 					let count = insert.chars().filter(|&c| c == '\n').count();
 					let after = insert.rsplit('\n').next().unwrap_or("");
-					CursorPos::new(base.line + count, after.chars().count())
+					CursorPos::new(base.line + count, CharIdx(after.chars().count()))
 				} else {
 					CursorPos::new(base.line, base.col + insert.chars().count())
 				};
@@ -724,12 +718,12 @@ impl Buffer {
 		self.session.desired_col = None;
 		let pos = self.session.selection.head;
 		let ci = self.pos_to_char(pos);
-		self.insert_at(ci, text);
+		self.insert_char_at(CharIdx(ci), text);
 
 		let newlines = text.chars().filter(|c| *c == '\n').count();
 		let new_pos = if newlines > 0 {
-			let after = &text[text.rfind('\n').unwrap() + 1..];
-			CursorPos::new(pos.line + newlines, after.len())
+			let after = text.rsplit('\n').next().unwrap_or("");
+			CursorPos::new(pos.line + newlines, CharIdx(after.chars().count()))
 		} else {
 			CursorPos::new(pos.line, pos.col + text.chars().count())
 		};
@@ -739,9 +733,9 @@ impl Buffer {
 
 	/// Yank `count` whole lines starting at `line` into the internal clipboard.
 	/// Returns the yanked text so callers can also write to the system clipboard.
-	pub fn yank_lines(&mut self, line: usize, count: usize) -> String {
-		let last = (line + count - 1).min(self.line_count().saturating_sub(1));
-		let start_ci = self.document.rope.line_to_char(line);
+	pub fn yank_lines(&mut self, line: LineIdx, count: usize) -> String {
+		let last = (*line + count - 1).min(*self.line_count() - 1);
+		let start_ci = self.document.rope.line_to_char(*line);
 		let end_ci = if last + 1 < self.document.rope.len_lines() {
 			self.document.rope.line_to_char(last + 1)
 		} else {
@@ -758,16 +752,16 @@ impl Buffer {
 	}
 
 	/// Delete `count` whole lines starting at `line`.
-	pub fn delete_lines(&mut self, line: usize, count: usize) {
-		let last = (line + count - 1).min(self.line_count().saturating_sub(1));
+	pub fn delete_lines(&mut self, line: LineIdx, count: usize) {
+		let last = (*line + count - 1).min(*self.line_count() - 1);
 		self.save_undo(EditKind::Delete);
-		let start_ci = self.document.rope.line_to_char(line);
+		let start_ci = self.document.rope.line_to_char(*line);
 		let end_ci = if last + 1 < self.document.rope.len_lines() {
 			self.document.rope.line_to_char(last + 1)
-		} else if line > 0 {
+		} else if *line > 0 {
 			// Last line with no trailing newline: delete preceding newline too
-			let prev_end = self.document.rope.line_to_char(line);
-			let prev_line_start = self.document.rope.line_to_char(line - 1);
+			let prev_end = self.document.rope.line_to_char(*line);
+			let prev_line_start = self.document.rope.line_to_char(*line - 1);
 			let prev_text: String = self
 				.document
 				.rope
@@ -776,14 +770,15 @@ impl Buffer {
 			let trim = prev_text
 				.trim_end_matches('\n')
 				.trim_end_matches('\r')
-				.len();
+				.chars()
+				.count();
 			prev_line_start + trim
 		} else {
 			self.document.rope.len_chars()
 		};
 		let real_start = start_ci.min(end_ci);
 		let real_end = start_ci.max(end_ci);
-		self.remove_range(real_start, real_end);
+		self.remove_range(CharIdx(real_start), CharIdx(real_end));
 		let new_line = line.min(self.line_count().saturating_sub(1));
 		self.session.selection = Selection::caret(CursorPos::new(new_line, 0));
 		self.post_edit();
@@ -797,16 +792,16 @@ impl Buffer {
 		self.save_undo(EditKind::Paste);
 		let line = self.session.selection.head.line;
 		// Insert after the newline at end of current line
-		let insert_ci = if line + 1 < self.document.rope.len_lines() {
-			self.document.rope.line_to_char(line + 1)
+		let insert_ci = if *line + 1 < self.document.rope.len_lines() {
+			self.document.rope.line_to_char(*line + 1)
 		} else {
 			// No trailing newline on last line — add one first
 			let end = self.document.rope.len_chars();
-			self.insert_char_at(end, '\n');
+			self.insert_char_at(CharIdx(end), "\n");
 			end + 1
 		};
 		let text = self.session.clipboard.clone();
-		self.insert_at(insert_ci, &text);
+		self.insert_char_at(CharIdx(insert_ci), &text);
 		self.session.selection = Selection::caret(CursorPos::new(line + 1, 0));
 		self.post_edit();
 	}
@@ -818,9 +813,9 @@ impl Buffer {
 		}
 		self.save_undo(EditKind::Paste);
 		let line = self.session.selection.head.line;
-		let insert_ci = self.document.rope.line_to_char(line);
+		let insert_ci = self.document.rope.line_to_char(*line);
 		let text = self.session.clipboard.clone();
-		self.insert_at(insert_ci, &text);
+		self.insert_char_at(CharIdx(insert_ci), &text);
 		self.session.selection = Selection::caret(CursorPos::new(line, 0));
 		self.post_edit();
 	}
@@ -829,9 +824,10 @@ impl Buffer {
 	/// Sets anchor to line start and head to end of last line (exclusive of newline).
 	pub fn select_lines(&mut self, count: usize) {
 		let line = self.session.selection.head.line;
-		let last = (line + count - 1).min(self.line_count().saturating_sub(1));
+		let last = (*line + count - 1).min(*self.line_count() - 1);
+		let last_line = LineIdx(last);
 		self.session.selection.anchor = CursorPos::new(line, 0);
-		self.session.selection.head = CursorPos::new(last, self.line_len(last));
+		self.session.selection.head = CursorPos::new(last_line, self.line_len(last_line));
 	}
 
 	// ── Indent / Dedent ───────────────────────────────────────────────────
@@ -840,7 +836,7 @@ impl Buffer {
 	pub fn indent_lines(&mut self) {
 		if self.has_multiple_carets() {
 			self.save_undo(EditKind::Insert);
-			let mut lines: Vec<usize> = self
+			let mut lines: Vec<LineIdx> = self
 				.all_cursor_heads()
 				.into_iter()
 				.map(|p| p.line)
@@ -848,8 +844,8 @@ impl Buffer {
 			lines.sort_unstable();
 			lines.dedup();
 			for &line in lines.iter().rev() {
-				let ci = self.document.rope.line_to_char(line);
-				self.insert_at(ci, "\t");
+				let ci = self.document.rope.line_to_char(*line);
+				self.insert_char_at(CharIdx(ci), "\t");
 			}
 			self.map_secondary_cursor_heads(|_, p| CursorPos::new(p.line, p.col + 1));
 			self.post_edit();
@@ -863,9 +859,9 @@ impl Buffer {
 			(s.line, e.line)
 		};
 		self.save_undo(EditKind::Insert);
-		for line in (first..=last).rev() {
-			let ci = self.document.rope.line_to_char(line);
-			self.insert_at(ci, "\t");
+		for line_raw in (*first..=*last).rev() {
+			let ci = self.document.rope.line_to_char(line_raw);
+			self.insert_char_at(CharIdx(ci), "\t");
 		}
 		let shift = |p: CursorPos| CursorPos::new(p.line, p.col + 1);
 		self.session.selection.anchor = shift(self.session.selection.anchor);
@@ -878,7 +874,7 @@ impl Buffer {
 	pub fn dedent_lines(&mut self) {
 		if self.has_multiple_carets() {
 			self.save_undo(EditKind::Delete);
-			let mut lines: Vec<usize> = self
+			let mut lines: Vec<LineIdx> = self
 				.all_cursor_heads()
 				.into_iter()
 				.map(|p| p.line)
@@ -888,9 +884,9 @@ impl Buffer {
 			let mut removed = Vec::with_capacity(lines.len());
 			for &line in lines.iter().rev() {
 				let text = self.line_text(line);
-				let ci = self.document.rope.line_to_char(line);
+				let ci = self.document.rope.line_to_char(*line);
 				let count = if text.starts_with('\t') {
-					self.remove_range(ci, ci + 1);
+					self.remove_range(CharIdx(ci), CharIdx(ci + 1));
 					1
 				} else {
 					let spaces = text
@@ -899,7 +895,7 @@ impl Buffer {
 						.count()
 						.min(TAB_WIDTH);
 					if spaces > 0 {
-						self.remove_range(ci, ci + spaces);
+						self.remove_range(CharIdx(ci), CharIdx(ci + spaces));
 					}
 					spaces
 				};
@@ -925,12 +921,13 @@ impl Buffer {
 			(s.line, e.line)
 		};
 		self.save_undo(EditKind::Delete);
-		let mut removed = vec![0usize; last - first + 1];
-		for (i, line) in (first..=last).rev().enumerate() {
+		let mut removed = vec![0usize; *last - *first + 1];
+		for (i, line_raw) in (*first..=*last).rev().enumerate() {
+			let line = LineIdx(line_raw);
 			let text = self.line_text(line);
-			let ci = self.document.rope.line_to_char(line);
-			let n = if text.starts_with('\t') {
-				self.remove_range(ci, ci + 1);
+			let ci = self.document.rope.line_to_char(*line);
+			let count = if text.starts_with('\t') {
+				self.remove_range(CharIdx(ci), CharIdx(ci + 1));
 				1
 			} else {
 				let spaces = text
@@ -939,15 +936,16 @@ impl Buffer {
 					.count()
 					.min(TAB_WIDTH);
 				if spaces > 0 {
-					self.remove_range(ci, ci + spaces);
+					self.remove_range(CharIdx(ci), CharIdx(ci + spaces));
 				}
 				spaces
-			};
-			removed[last - first - i] = n;
-		}
+				};
+				removed[*last - *first - i] = count;
+				}
+
 		let clamp = |p: CursorPos| {
 			let rm = removed
-				.get(p.line.saturating_sub(first))
+				.get(*p.line.saturating_sub(*first))
 				.copied()
 				.unwrap_or(0);
 			CursorPos::new(p.line, p.col.saturating_sub(rm))
@@ -969,7 +967,7 @@ impl Buffer {
 		self.session.desired_col = None;
 		let pos = self.session.selection.head;
 		let ci = self.pos_to_char(pos);
-		self.insert_char_at(ci, ch);
+		self.insert_char_at(CharIdx(ci), &ch.to_string());
 		let new = if ch == '\n' {
 			CursorPos::new(pos.line + 1, 0)
 		} else {
@@ -990,19 +988,19 @@ impl Buffer {
 			let mut edits: Vec<_> = self
 				.all_cursor_heads()
 				.into_iter()
-				.map(|caret| (self.pos_to_char(caret), caret))
+				.map(|caret| (CharIdx(self.pos_to_char(caret)), caret))
 				.collect();
 			edits.sort_by(|a, b| b.0.cmp(&a.0));
 			for &(ci, _) in &edits {
-				self.insert_at(ci, text);
+				self.insert_char_at(ci, text);
 			}
 			let newlines = text.chars().filter(|c| *c == '\n').count();
 			let secondary = edits
 				.iter()
 				.map(|(_, caret)| {
 					if newlines > 0 {
-						let after = &text[text.rfind('\n').unwrap() + 1..];
-						CursorPos::new(caret.line + newlines, after.chars().count())
+						let after = text.rsplit('\n').next().unwrap_or("");
+						CursorPos::new(caret.line + newlines, CharIdx(after.chars().count()))
 					} else {
 						CursorPos::new(caret.line, caret.col + text.chars().count())
 					}
@@ -1010,8 +1008,8 @@ impl Buffer {
 				.filter(|&caret| caret != primary)
 				.collect();
 			let new_primary = if newlines > 0 {
-				let after = &text[text.rfind('\n').unwrap() + 1..];
-				CursorPos::new(primary.line + newlines, after.chars().count())
+				let after = text.rsplit('\n').next().unwrap_or("");
+				CursorPos::new(primary.line + newlines, CharIdx(after.chars().count()))
 			} else {
 				CursorPos::new(primary.line, primary.col + text.chars().count())
 			};
@@ -1024,11 +1022,11 @@ impl Buffer {
 		self.session.desired_col = None;
 		let pos = self.session.selection.head;
 		let ci = self.pos_to_char(pos);
-		self.insert_at(ci, text);
+		self.insert_char_at(CharIdx(ci), text);
 		let newlines = text.chars().filter(|c| *c == '\n').count();
 		let new = if newlines > 0 {
-			let after = &text[text.rfind('\n').unwrap() + 1..];
-			CursorPos::new(pos.line + newlines, after.len())
+			let after = text.rsplit('\n').next().unwrap_or("");
+			CursorPos::new(pos.line + newlines, CharIdx(after.chars().count()))
 		} else {
 			CursorPos::new(pos.line, pos.col + text.chars().count())
 		};
@@ -1049,7 +1047,7 @@ impl Buffer {
 				.map(|caret| {
 					let indent = self.line_indent(caret.line);
 					let before = self.line_text(caret.line);
-					let before_cursor = &before[..caret.col.min(before.len())];
+					let before_cursor = &before[..(*caret.col).min(before.len())];
 					let trimmed = before_cursor.trim_end();
 					let extra =
 						match self.document.language {
@@ -1078,16 +1076,16 @@ impl Buffer {
 							}
 						};
 					(
-						self.pos_to_char(caret),
+						CharIdx(self.pos_to_char(caret)),
 						caret,
 						format!("\n{}{}", indent, extra),
-						indent.chars().count() + extra.chars().count(),
+						CharIdx(indent.chars().count() + extra.chars().count()),
 					)
 				})
 				.collect();
 			edits.sort_by(|a, b| b.0.cmp(&a.0));
 			for (ci, _, text, _) in &edits {
-				self.insert_at(*ci, text);
+				self.insert_char_at(*ci, text);
 			}
 			let secondary = edits
 				.iter()
@@ -1098,7 +1096,7 @@ impl Buffer {
 				.iter()
 				.find(|(_, caret, _, _)| *caret == primary)
 				.map(|(_, _, _, col)| *col)
-				.unwrap_or(0);
+				.unwrap_or(CharIdx(0));
 			self.set_cursor_heads(CursorPos::new(primary.line + 1, primary_col), secondary);
 			self.post_edit();
 			return;
@@ -1109,7 +1107,7 @@ impl Buffer {
 		let pos = self.session.selection.head;
 		let indent = self.line_indent(pos.line);
 		let before = self.line_text(pos.line);
-		let before_cursor = &before[..pos.col.min(before.len())];
+		let before_cursor = &before[..(*pos.col).min(before.len())];
 		let trimmed = before_cursor.trim_end();
 
 		let extra = match self.document.language {
@@ -1142,9 +1140,9 @@ impl Buffer {
 
 		let ins = format!("\n{}{}", indent, extra);
 		let ci = self.pos_to_char(pos);
-		self.insert_at(ci, &ins);
+		self.insert_char_at(CharIdx(ci), &ins);
 		self.session.selection =
-			Selection::caret(CursorPos::new(pos.line + 1, indent.len() + extra.len()));
+			Selection::caret(CursorPos::new(pos.line + 1, CharIdx(indent.chars().count() + extra.chars().count())));
 		self.post_edit();
 	}
 
@@ -1157,12 +1155,12 @@ impl Buffer {
 				let mut edits: Vec<_> = self
 					.all_cursor_heads()
 					.into_iter()
-					.map(|caret| (self.pos_to_char(caret), caret))
+					.map(|caret| (CharIdx(self.pos_to_char(caret)), caret))
 					.collect();
 				edits.sort_by(|a, b| b.0.cmp(&a.0));
 				let pair = format!("{}{}", ch, close);
 				for &(ci, _) in &edits {
-					self.insert_at(ci, &pair);
+					self.insert_char_at(ci, &pair);
 				}
 				let secondary = edits
 					.iter()
@@ -1200,7 +1198,7 @@ impl Buffer {
 			self.session.desired_col = None;
 			let p = self.session.selection.head;
 			let ci = self.pos_to_char(p);
-			self.insert_at(ci, &format!("{}{}", ch, close));
+			self.insert_char_at(CharIdx(ci), &format!("{}{}", ch, close));
 			self.session.selection = Selection::caret(CursorPos::new(p.line, p.col + 1));
 			self.post_edit();
 		} else {
@@ -1217,15 +1215,15 @@ impl Buffer {
 				.all_cursor_heads()
 				.into_iter()
 				.filter_map(|caret| {
-					if caret.line == 0 && caret.col == 0 {
+					if *caret.line == 0 && *caret.col == 0 {
 						return None;
 					}
-					let (new_pos, start, end) = if caret.col == 0 {
-						let prev_line = caret.line - 1;
+					let (new_pos, start, end) = if *caret.col == 0 {
+						let prev_line = caret.line.saturating_sub(1);
 						let new_pos = CursorPos::new(prev_line, self.line_len(prev_line));
 						(new_pos, self.pos_to_char(new_pos), self.pos_to_char(caret))
 					} else {
-						let new_pos = CursorPos::new(caret.line, caret.col - 1);
+						let new_pos = CursorPos::new(caret.line, caret.col.saturating_sub(1));
 						(new_pos, self.pos_to_char(new_pos), self.pos_to_char(caret))
 					};
 					Some((start, end, caret, new_pos))
@@ -1233,8 +1231,9 @@ impl Buffer {
 				.collect();
 			edits.sort_by(|a, b| b.0.cmp(&a.0));
 			for (start, end, _, _) in &edits {
-				self.remove_range(*start, *end);
+				self.remove_range(CharIdx(*start), CharIdx(*end));
 			}
+
 			let secondary = edits
 				.iter()
 				.map(|(_, _, caret, new_pos)| if *caret == primary { primary } else { *new_pos })
@@ -1257,20 +1256,20 @@ impl Buffer {
 			return;
 		}
 		let p = self.session.selection.head;
-		if p.line == 0 && p.col == 0 {
+		if *p.line == 0 && *p.col == 0 {
 			return;
 		}
 		self.save_undo(EditKind::Delete);
 
 		// Auto-pair removal
-		if p.col > 0 {
+		if *p.col > 0 {
 			if let Some(prev) = self.char_before(p) {
 				if let Some(exp) = matching_close(prev) {
 					if self.char_at(p) == Some(exp) {
-						let cs = self.pos_to_char(CursorPos::new(p.line, p.col - 1));
-						self.remove_range(cs, cs + 2);
+						let cs = self.pos_to_char(CursorPos::new(p.line, p.col.saturating_sub(1)));
+						self.remove_range(CharIdx(cs), CharIdx(cs + 2));
 						self.session.selection =
-							Selection::caret(CursorPos::new(p.line, p.col - 1));
+							Selection::caret(CursorPos::new(p.line, p.col.saturating_sub(1)));
 						self.post_edit();
 						return;
 					}
@@ -1279,17 +1278,17 @@ impl Buffer {
 		}
 
 		let (new_pos, ds, de);
-		if p.col == 0 {
-			let pl = p.line - 1;
+		if *p.col == 0 {
+			let pl = p.line.saturating_sub(1);
 			new_pos = CursorPos::new(pl, self.line_len(pl));
 			ds = self.pos_to_char(new_pos);
 			de = self.pos_to_char(p);
 		} else {
-			new_pos = CursorPos::new(p.line, p.col - 1);
+			new_pos = CursorPos::new(p.line, p.col.saturating_sub(1));
 			ds = self.pos_to_char(new_pos);
 			de = self.pos_to_char(p);
 		}
-		self.remove_range(ds, de);
+		self.remove_range(CharIdx(ds), CharIdx(de));
 		self.session.selection = Selection::caret(new_pos);
 		self.post_edit();
 	}
@@ -1309,7 +1308,7 @@ impl Buffer {
 				.collect();
 			edits.sort_by(|a, b| b.0.cmp(&a.0));
 			for (ci, _) in &edits {
-				self.remove_range(*ci, *ci + 1);
+				self.remove_range(CharIdx(*ci), CharIdx(*ci + 1));
 			}
 			let secondary = edits
 				.iter()
@@ -1332,7 +1331,7 @@ impl Buffer {
 			return;
 		}
 		self.save_undo(EditKind::Delete);
-		self.remove_range(ci, ci + 1);
+		self.remove_range(CharIdx(ci), CharIdx(ci + 1));
 		self.post_edit();
 	}
 
@@ -1345,7 +1344,7 @@ impl Buffer {
 				.all_cursor_heads()
 				.into_iter()
 				.filter_map(|caret| {
-					if caret.line == 0 && caret.col == 0 {
+					if *caret.line == 0 && *caret.col == 0 {
 						return None;
 					}
 					let target = self.word_boundary_left(caret);
@@ -1359,8 +1358,9 @@ impl Buffer {
 				.collect();
 			edits.sort_by(|a, b| b.0.cmp(&a.0));
 			for (start, end, _, _) in &edits {
-				self.remove_range(*start, *end);
+				self.remove_range(CharIdx(*start), CharIdx(*end));
 			}
+
 			let secondary = edits
 				.iter()
 				.map(|(_, _, caret, target)| if *caret == primary { primary } else { *target })
@@ -1383,12 +1383,12 @@ impl Buffer {
 			return;
 		}
 		let p = self.session.selection.head;
-		if p.line == 0 && p.col == 0 {
+		if *p.line == 0 && *p.col == 0 {
 			return;
 		}
 		self.save_undo(EditKind::Delete);
 		let t = self.word_boundary_left(p);
-		self.remove_range(self.pos_to_char(t), self.pos_to_char(p));
+		self.remove_range(CharIdx(self.pos_to_char(t)), CharIdx(self.pos_to_char(p)));
 		self.session.selection = Selection::caret(t);
 		self.post_edit();
 	}
@@ -1411,8 +1411,9 @@ impl Buffer {
 				.collect();
 			edits.sort_by(|a, b| b.0.cmp(&a.0));
 			for (start, end, _) in &edits {
-				self.remove_range(*start, *end);
+				self.remove_range(CharIdx(*start), CharIdx(*end));
 			}
+
 			let secondary = edits
 				.iter()
 				.map(|(_, _, caret)| *caret)
@@ -1435,7 +1436,7 @@ impl Buffer {
 		}
 		self.save_undo(EditKind::Delete);
 		let t = self.word_boundary_right(p);
-		self.remove_range(self.pos_to_char(p), self.pos_to_char(t));
+		self.remove_range(CharIdx(self.pos_to_char(p)), CharIdx(self.pos_to_char(t)));
 		self.post_edit();
 	}
 
@@ -1443,7 +1444,7 @@ impl Buffer {
 		if self.has_multiple_carets() {
 			self.save_undo_boundary();
 			let primary = self.session.selection.head;
-			let mut lines: Vec<usize> = self
+			let mut lines: Vec<LineIdx> = self
 				.all_cursor_heads()
 				.into_iter()
 				.map(|p| p.line)
@@ -1452,15 +1453,15 @@ impl Buffer {
 			lines.dedup();
 			for &line in lines.iter().rev() {
 				let text = self.line_text(line);
-				let line_start = self.document.rope.line_to_char(line);
-				let line_chars = self.document.rope.line(line).len_chars();
+				let line_start = self.document.rope.line_to_char(*line);
+				let line_chars = self.document.rope.line(*line).len_chars();
 				let insert_at = line_start + line_chars;
 				let insert = if insert_at >= self.document.rope.len_chars() {
 					format!("\n{}", text)
 				} else {
 					format!("{}\n", text)
 				};
-				self.insert_at(insert_at, &insert);
+				self.insert_char_at(CharIdx(insert_at), &insert);
 			}
 			let shifted = |caret: CursorPos| {
 				let offset = lines.iter().filter(|&&line| line <= caret.line).count();
@@ -1479,15 +1480,15 @@ impl Buffer {
 		self.save_undo_boundary();
 		let l = self.session.selection.head.line;
 		let t = self.line_text(l);
-		let ls = self.document.rope.line_to_char(l);
-		let lc = self.document.rope.line(l).len_chars();
+		let ls = self.document.rope.line_to_char(*l);
+		let lc = self.document.rope.line(*l).len_chars();
 		let at = ls + lc;
 		let ins = if at >= self.document.rope.len_chars() {
 			format!("\n{}", t)
 		} else {
 			format!("{}\n", t)
 		};
-		self.insert_at(at, &ins);
+		self.insert_char_at(CharIdx(at), &ins);
 		self.session.selection =
 			Selection::caret(CursorPos::new(l + 1, self.session.selection.head.col));
 		self.post_edit();
@@ -1498,7 +1499,7 @@ impl Buffer {
 			return;
 		}
 		let (s, e) = self.session.selection.ordered();
-		self.remove_range(self.pos_to_char(s), self.pos_to_char(e));
+		self.remove_range(CharIdx(self.pos_to_char(s)), CharIdx(self.pos_to_char(e)));
 		self.session.selection = Selection::caret(s);
 	}
 
@@ -1529,6 +1530,10 @@ impl Buffer {
 		self.jump_to_current_match();
 	}
 
+	pub fn search_update_replacement(&mut self, replacement: &str) {
+		self.session.search.replacement = replacement.to_string();
+	}
+
 	pub fn search_prev(&mut self) {
 		self.session.search.prev_match();
 		self.jump_to_current_match();
@@ -1545,14 +1550,8 @@ impl Buffer {
 
 	pub fn search_replace_all(&mut self) {
 		self.save_undo_boundary();
-		let replacement = self.session.search.replacement.clone();
-		let matches = self.session.search.matches.clone();
-		let mut changed = 0usize;
-		for m in matches.iter().rev() {
-			self.replace_range(m.char_start, m.char_end, &replacement);
-			changed += 1;
-		}
-		if changed > 0 {
+		let count = self.session.search.replace_all(&mut self.document.rope);
+		if count > 0 {
 			self.post_edit();
 		}
 	}
@@ -1610,18 +1609,18 @@ impl Buffer {
 		let pos = self.session.selection.head;
 		let text = self.line_text(pos.line);
 		let chars: Vec<char> = text.chars().collect();
-		if pos.col >= chars.len() {
+		if *pos.col >= chars.len() {
 			return None;
 		}
 		let is_word = |c: char| c.is_alphanumeric() || c == '_';
-		if !is_word(chars[pos.col]) {
+		if !is_word(chars[*pos.col]) {
 			return None;
 		}
-		let mut start = pos.col;
+		let mut start = *pos.col;
 		while start > 0 && is_word(chars[start - 1]) {
 			start -= 1;
 		}
-		let mut end = pos.col + 1;
+		let mut end = *pos.col + 1;
 		while end < chars.len() && is_word(chars[end]) {
 			end += 1;
 		}
@@ -1630,7 +1629,7 @@ impl Buffer {
 
 	// ── Folding ───────────────────────────────────────────────────────────
 
-	pub fn toggle_fold(&mut self, line: usize) {
+	pub fn toggle_fold(&mut self, line: LineIdx) {
 		self.document.folds.toggle(line);
 		self.refresh_visual_lines();
 	}
@@ -1642,7 +1641,7 @@ impl Buffer {
 		self.refresh_visual_lines();
 	}
 
-	pub fn set_wrap_col(&mut self, col: usize) {
+	pub fn set_wrap_col(&mut self, col: CharIdx) {
 		self.document.wrap_config.wrap_col = col;
 		if self.document.wrap_config.enabled {
 			self.refresh_visual_lines();
@@ -1650,10 +1649,11 @@ impl Buffer {
 	}
 
 	fn move_caret_left(&self, p: CursorPos) -> CursorPos {
-		if p.col > 0 {
-			CursorPos::new(p.line, p.col - 1)
-		} else if p.line > 0 {
-			CursorPos::new(p.line - 1, self.line_len(p.line - 1))
+		if *p.col > 0 {
+			CursorPos::new(p.line, p.col.saturating_sub(1))
+		} else if *p.line > 0 {
+			let pl = p.line.saturating_sub(1);
+			CursorPos::new(pl, self.line_len(pl))
 		} else {
 			p
 		}
@@ -1663,30 +1663,30 @@ impl Buffer {
 		let ll = self.line_len(p.line);
 		if p.col < ll {
 			CursorPos::new(p.line, p.col + 1)
-		} else if p.line < self.line_count() - 1 {
+		} else if *p.line < *self.line_count() - 1 {
 			CursorPos::new(p.line + 1, 0)
 		} else {
 			p
 		}
 	}
 
-	fn move_caret_up(&self, p: CursorPos, target_col: usize) -> CursorPos {
-		if p.line == 0 {
+	fn move_caret_up(&self, p: CursorPos, target_col: CharIdx) -> CursorPos {
+		if *p.line == 0 {
 			return p;
 		}
-		let mut line = p.line - 1;
-		while line > 0 && self.document.folds.is_hidden(line) {
+		let mut line = p.line.saturating_sub(1);
+		while *line > 0 && self.document.folds.is_hidden(line) {
 			line -= 1;
 		}
 		CursorPos::new(line, target_col.min(self.line_len(line)))
 	}
 
-	fn move_caret_down(&self, p: CursorPos, target_col: usize) -> CursorPos {
-		if p.line >= self.line_count() - 1 {
+	fn move_caret_down(&self, p: CursorPos, target_col: CharIdx) -> CursorPos {
+		if *p.line >= *self.line_count() - 1 {
 			return p;
 		}
 		let mut line = p.line + 1;
-		let max = self.line_count() - 1;
+		let max = self.line_count().saturating_sub(1);
 		while line < max && self.document.folds.is_hidden(line) {
 			line += 1;
 		}
@@ -1752,10 +1752,11 @@ impl Buffer {
 			return;
 		}
 		let p = self.session.selection.head;
-		let n = if p.col > 0 {
-			CursorPos::new(p.line, p.col - 1)
-		} else if p.line > 0 {
-			CursorPos::new(p.line - 1, self.line_len(p.line - 1))
+		let n = if *p.col > 0 {
+			CursorPos::new(p.line, p.col.saturating_sub(1))
+		} else if *p.line > 0 {
+			let pl = p.line.saturating_sub(1);
+			CursorPos::new(pl, self.line_len(pl))
 		} else {
 			p
 		};
@@ -1784,7 +1785,7 @@ impl Buffer {
 		let ll = self.line_len(p.line);
 		let n = if p.col < ll {
 			CursorPos::new(p.line, p.col + 1)
-		} else if p.line < self.line_count() - 1 {
+		} else if *p.line < *self.line_count() - 1 {
 			CursorPos::new(p.line + 1, 0)
 		} else {
 			p
@@ -1812,13 +1813,13 @@ impl Buffer {
 			return;
 		}
 		let p = self.session.selection.head;
-		if p.line == 0 {
+		if *p.line == 0 {
 			return;
 		}
 		let tc = self.session.desired_col.unwrap_or(p.col);
 		// Skip folded lines
-		let mut nl = p.line - 1;
-		while nl > 0 && self.document.folds.is_hidden(nl) {
+		let mut nl = p.line.saturating_sub(1);
+		while *nl > 0 && self.document.folds.is_hidden(nl) {
 			nl -= 1;
 		}
 		let nc = tc.min(self.line_len(nl));
@@ -1846,12 +1847,12 @@ impl Buffer {
 			return;
 		}
 		let p = self.session.selection.head;
-		if p.line >= self.line_count() - 1 {
+		if *p.line >= *self.line_count() - 1 {
 			return;
 		}
 		let tc = self.session.desired_col.unwrap_or(p.col);
 		let mut nl = p.line + 1;
-		let max = self.line_count() - 1;
+		let max = self.line_count().saturating_sub(1);
 		while nl < max && self.document.folds.is_hidden(nl) {
 			nl += 1;
 		}
@@ -1869,10 +1870,10 @@ impl Buffer {
 					.chars()
 					.position(|c| !c.is_whitespace())
 					.unwrap_or(0);
-				let col = if sel.head.col <= first && sel.head.col != 0 {
-					0
+				let col = if *sel.head.col <= first && *sel.head.col != 0 {
+					CharIdx(0)
 				} else {
-					first
+					CharIdx(first)
 				};
 				CursorPos::new(sel.head.line, col)
 			});
@@ -1886,10 +1887,10 @@ impl Buffer {
 					.chars()
 					.position(|c| !c.is_whitespace())
 					.unwrap_or(0);
-				let col = if p.col <= first && p.col != 0 {
-					0
+				let col = if *p.col <= first && *p.col != 0 {
+					CharIdx(0)
 				} else {
-					first
+					CharIdx(first)
 				};
 				CursorPos::new(p.line, col)
 			});
@@ -1902,12 +1903,12 @@ impl Buffer {
 			.chars()
 			.position(|c| !c.is_whitespace())
 			.unwrap_or(0);
-		let nc = if p.col <= first && p.col != 0 {
-			0
+		let col = if *p.col <= first && *p.col != 0 {
+			CharIdx(0)
 		} else {
-			first
+			CharIdx(first)
 		};
-		self.set_head(CursorPos::new(p.line, nc), extend);
+		self.set_head(CursorPos::new(p.line, col), extend);
 	}
 
 	pub fn move_end(&mut self, extend: bool) {
@@ -1928,76 +1929,40 @@ impl Buffer {
 		self.set_head(CursorPos::new(p.line, self.line_len(p.line)), extend);
 	}
 
-	pub fn move_word_left(&mut self, extend: bool) {
-		if self.has_multiple_carets() && extend {
-			self.session.desired_col = None;
-			self.map_all_selection_heads(|buf, sel| buf.word_boundary_left(sel.head));
-			return;
-		}
-		if self.has_multiple_carets() && !extend {
-			self.session.desired_col = None;
-			self.map_secondary_cursor_heads(|buf, p| buf.word_boundary_left(p));
-			return;
-		}
-		self.session.desired_col = None;
-		self.set_head(self.word_boundary_left(self.session.selection.head), extend);
-	}
-
-	pub fn move_word_right(&mut self, extend: bool) {
-		if self.has_multiple_carets() && extend {
-			self.session.desired_col = None;
-			self.map_all_selection_heads(|buf, sel| buf.word_boundary_right(sel.head));
-			return;
-		}
-		if self.has_multiple_carets() && !extend {
-			self.session.desired_col = None;
-			self.map_secondary_cursor_heads(|buf, p| buf.word_boundary_right(p));
-			return;
-		}
-		self.session.desired_col = None;
-		self.set_head(
-			self.word_boundary_right(self.session.selection.head),
-			extend,
-		);
-	}
-
 	pub fn move_to_start(&mut self, extend: bool) {
-		if self.has_multiple_carets() && !extend {
-			self.session.desired_col = None;
-			self.map_secondary_cursor_heads(|_buf, _| CursorPos::zero());
-			return;
-		}
 		self.session.desired_col = None;
 		self.set_head(CursorPos::zero(), extend);
 	}
 
 	pub fn move_to_end(&mut self, extend: bool) {
-		if self.has_multiple_carets() && !extend {
-			self.session.desired_col = None;
-			self.map_secondary_cursor_heads(|buf, _| {
-				let line = buf.line_count().saturating_sub(1);
-				CursorPos::new(line, buf.line_len(line))
-			});
-			return;
-		}
 		self.session.desired_col = None;
 		let l = self.line_count().saturating_sub(1);
 		self.set_head(CursorPos::new(l, self.line_len(l)), extend);
 	}
 
-	pub fn page_up(&mut self, vis: usize, extend: bool) {
-		if self.has_multiple_carets() && !extend {
-			let target_col = self
-				.session
-				.desired_col
-				.unwrap_or(self.session.selection.head.col);
-			self.map_secondary_cursor_heads(|buf, p| {
-				let line = p.line.saturating_sub(vis);
-				CursorPos::new(line, target_col.min(buf.line_len(line)))
-			});
-			self.session.desired_col = Some(target_col);
+	pub fn move_word_left(&mut self, extend: bool) {
+		if self.has_multiple_carets() {
+			self.session.desired_col = None;
+			self.map_all_selection_heads(|buf, sel| buf.word_boundary_left(sel.head));
 			return;
 		}
+		self.session.desired_col = None;
+		let p = self.session.selection.head;
+		self.set_head(self.word_boundary_left(p), extend);
+	}
+
+	pub fn move_word_right(&mut self, extend: bool) {
+		if self.has_multiple_carets() {
+			self.session.desired_col = None;
+			self.map_all_selection_heads(|buf, sel| buf.word_boundary_right(sel.head));
+			return;
+		}
+		self.session.desired_col = None;
+		let p = self.session.selection.head;
+		self.set_head(self.word_boundary_right(p), extend);
+	}
+
+	pub fn page_up(&mut self, vis: usize, extend: bool) {
 		let p = self.session.selection.head;
 		let tc = self.session.desired_col.unwrap_or(p.col);
 		let nl = p.line.saturating_sub(vis);
@@ -2006,19 +1971,6 @@ impl Buffer {
 	}
 
 	pub fn page_down(&mut self, vis: usize, extend: bool) {
-		if self.has_multiple_carets() && !extend {
-			let target_col = self
-				.session
-				.desired_col
-				.unwrap_or(self.session.selection.head.col);
-			let max_line = self.line_count().saturating_sub(1);
-			self.map_secondary_cursor_heads(|buf, p| {
-				let line = (p.line + vis).min(max_line);
-				CursorPos::new(line, target_col.min(buf.line_len(line)))
-			});
-			self.session.desired_col = Some(target_col);
-			return;
-		}
 		let p = self.session.selection.head;
 		let tc = self.session.desired_col.unwrap_or(p.col);
 		let nl = (p.line + vis).min(self.line_count().saturating_sub(1));
@@ -2036,38 +1988,32 @@ impl Buffer {
 	}
 
 	pub fn select_word_at(&mut self, p: CursorPos) {
-		self.clear_secondary_selections();
-		let p = self.clamp_pos(p);
 		let text = self.line_text(p.line);
-		if text.is_empty() {
+		let chars: Vec<char> = text.chars().collect();
+		if *p.col >= chars.len() {
 			self.session.selection = Selection::caret(p);
 			return;
 		}
-		let chars: Vec<char> = text.chars().collect();
-		let col = p.col.min(chars.len().saturating_sub(1));
-		let is_w = |c: char| c.is_alphanumeric() || c == '_';
-		if !is_w(chars[col]) {
-			self.session.selection = Selection {
-				anchor: CursorPos::new(p.line, col),
-				head: CursorPos::new(p.line, col + 1),
-			};
+		let is_word = |c: char| c.is_alphanumeric() || c == '_';
+		if !is_word(chars[*p.col]) {
+			self.session.selection = Selection::caret(p);
 			return;
 		}
-		let mut s = col;
-		while s > 0 && is_w(chars[s - 1]) {
-			s -= 1;
+		let mut start = *p.col;
+		while start > 0 && is_word(chars[start - 1]) {
+			start -= 1;
 		}
-		let mut e = col;
-		while e < chars.len() && is_w(chars[e]) {
-			e += 1;
+		let mut end = *p.col + 1;
+		while end < chars.len() && is_word(chars[end]) {
+			end += 1;
 		}
 		self.session.selection = Selection {
-			anchor: CursorPos::new(p.line, s),
-			head: CursorPos::new(p.line, e),
+			anchor: CursorPos::new(p.line, CharIdx(start)),
+			head: CursorPos::new(p.line, CharIdx(end)),
 		};
 	}
 
-	pub fn select_line(&mut self, line: usize) {
+	pub fn select_line(&mut self, line: LineIdx) {
 		self.clear_secondary_selections();
 		let l = line.min(self.line_count().saturating_sub(1));
 		self.session.selection = Selection {
@@ -2088,22 +2034,22 @@ impl Buffer {
 		self.refresh_bracket_match();
 	}
 
-	pub fn click_to_pos(&self, line: usize, col: usize) -> CursorPos {
+	pub fn click_to_pos(&self, line: LineIdx, col: CharIdx) -> CursorPos {
 		self.clamp_pos(CursorPos::new(line, col))
 	}
 
 	// ── Word boundaries ───────────────────────────────────────────────────
 
 	fn word_boundary_left(&self, p: CursorPos) -> CursorPos {
-		if p.col == 0 {
-			if p.line == 0 {
+		if *p.col == 0 {
+			if *p.line == 0 {
 				return p;
 			}
-			let pl = p.line - 1;
+			let pl = p.line.saturating_sub(1);
 			return CursorPos::new(pl, self.line_len(pl));
 		}
 		let chars: Vec<char> = self.line_text(p.line).chars().collect();
-		let mut c = p.col.min(chars.len());
+		let mut c = (*p.col).min(chars.len());
 		let is_w = |ch: char| ch.is_alphanumeric() || ch == '_';
 		while c > 0 && chars[c - 1].is_whitespace() {
 			c -= 1;
@@ -2115,19 +2061,19 @@ impl Buffer {
 		} else if c > 0 {
 			c -= 1;
 		}
-		CursorPos::new(p.line, c)
+		CursorPos::new(p.line, CharIdx(c))
 	}
 
 	fn word_boundary_right(&self, p: CursorPos) -> CursorPos {
 		let ll = self.line_len(p.line);
 		if p.col >= ll {
-			if p.line >= self.line_count() - 1 {
+			if *p.line >= *self.line_count() - 1 {
 				return p;
 			}
 			return CursorPos::new(p.line + 1, 0);
 		}
 		let chars: Vec<char> = self.line_text(p.line).chars().collect();
-		let mut c = p.col;
+		let mut c = *p.col;
 		let is_w = |ch: char| ch.is_alphanumeric() || ch == '_';
 		if c < chars.len() && is_w(chars[c]) {
 			while c < chars.len() && is_w(chars[c]) {
@@ -2139,7 +2085,7 @@ impl Buffer {
 		while c < chars.len() && chars[c].is_whitespace() {
 			c += 1;
 		}
-		CursorPos::new(p.line, c)
+		CursorPos::new(p.line, CharIdx(c))
 	}
 
 	// ── Bracket matching ──────────────────────────────────────────────────
@@ -2149,26 +2095,26 @@ impl Buffer {
 		let p = self.session.selection.head;
 		let text = self.line_text(p.line);
 		let chars: Vec<char> = text.chars().collect();
-		for &col in &[p.col, p.col.wrapping_sub(1)] {
+		for &col in &[*p.col, (*p.col).wrapping_sub(1)] {
 			if col < chars.len() {
 				let ch = chars[col];
 				if is_open_bracket(ch) {
-					if let Some((ml, mc)) = self.find_close(p.line, col, ch) {
+					if let Some((ml, mc)) = self.find_close(p.line, CharIdx(col), ch) {
 						self.session.matched_bracket = Some(BracketPair {
 							open_line: p.line,
-							open_col: col,
+							open_col: CharIdx(col),
 							close_line: ml,
 							close_col: mc,
 						});
 						return;
 					}
 				} else if is_close_bracket(ch) {
-					if let Some((ml, mc)) = self.find_open(p.line, col, ch) {
+					if let Some((ml, mc)) = self.find_open(p.line, CharIdx(col), ch) {
 						self.session.matched_bracket = Some(BracketPair {
 							open_line: ml,
 							open_col: mc,
 							close_line: p.line,
-							close_col: col,
+							close_col: CharIdx(col),
 						});
 						return;
 					}
@@ -2177,18 +2123,19 @@ impl Buffer {
 		}
 	}
 
-	fn find_close(&self, sl: usize, sc: usize, open: char) -> Option<(usize, usize)> {
+	fn find_close(&self, sl: LineIdx, sc: CharIdx, open: char) -> Option<(LineIdx, CharIdx)> {
 		let close = matching_close(open)?;
 		let mut d = 0i32;
-		for l in sl..self.line_count() {
+		for l_raw in *sl..*self.line_count() {
+			let l = LineIdx(l_raw);
 			let cs: Vec<char> = self.line_text(l).chars().collect();
-			for c in (if l == sl { sc } else { 0 })..cs.len() {
+			for c in (if l == sl { *sc } else { 0 })..cs.len() {
 				if cs[c] == open {
 					d += 1;
 				} else if cs[c] == close {
 					d -= 1;
 					if d == 0 {
-						return Some((l, c));
+						return Some((l, CharIdx(c)));
 					}
 				}
 			}
@@ -2196,13 +2143,14 @@ impl Buffer {
 		None
 	}
 
-	fn find_open(&self, sl: usize, sc: usize, close: char) -> Option<(usize, usize)> {
+	fn find_open(&self, sl: LineIdx, sc: CharIdx, close: char) -> Option<(LineIdx, CharIdx)> {
 		let open = matching_open(close)?;
 		let mut d = 0i32;
-		for l in (0..=sl).rev() {
+		for l_raw in (0..=*sl).rev() {
+			let l = LineIdx(l_raw);
 			let cs: Vec<char> = self.line_text(l).chars().collect();
 			let end = if l == sl {
-				sc
+				*sc
 			} else {
 				cs.len().saturating_sub(1)
 			};
@@ -2215,7 +2163,7 @@ impl Buffer {
 				} else if cs[c] == open {
 					d -= 1;
 					if d == 0 {
-						return Some((l, c));
+						return Some((l, CharIdx(c)));
 					}
 				}
 			}
@@ -2226,7 +2174,7 @@ impl Buffer {
 	// ── Indent guides ─────────────────────────────────────────────────────
 
 	/// Returns visual column positions of indent guides for this line.
-	pub fn indent_guides(&self, line: usize) -> Vec<usize> {
+	pub fn indent_guides(&self, line: LineIdx) -> Vec<usize> {
 		let text = self.line_text(line);
 		// Count leading whitespace in visual columns (tabs = TAB_WIDTH, spaces = 1).
 		let mut vcol = 0usize;
@@ -2254,8 +2202,8 @@ impl Buffer {
 	/// Returns the number of lines changed.
 	pub fn substitute(
 		&mut self,
-		first: usize,
-		last: usize,
+		first: LineIdx,
+		last: LineIdx,
 		pattern: &str,
 		replacement: &str,
 		global: bool,
@@ -2276,7 +2224,8 @@ impl Buffer {
 
 		let mut changed = 0usize;
 		// Process bottom-to-top so rope char indices above stay valid.
-		for line in (first..=last).rev() {
+		for line_raw in (*first..=*last).rev() {
+			let line = LineIdx(line_raw);
 			let text = self.line_text(line);
 			let new_text = if global {
 				re.replace_all(&text, |caps: &Captures| apply_vim_replacement(&rep, caps))
@@ -2290,7 +2239,7 @@ impl Buffer {
 			}
 
 			// Splice just the content portion of the line (leave the newline).
-			let line_start = self.document.rope.line_to_char(line);
+			let line_start = self.document.rope.line_to_char(*line);
 			let content_end = line_start + self.line_text(line).chars().count();
 			self.replace_range(line_start, content_end, &new_text);
 			changed += 1;
@@ -2303,8 +2252,6 @@ impl Buffer {
 	}
 }
 
-// ── Vim replacement helper ─────────────────────────────────────────────────────
-
 fn apply_vim_replacement(rep: &str, caps: &Captures) -> String {
 	let mut out = String::new();
 	let mut chars = rep.chars().peekable();
@@ -2313,10 +2260,9 @@ fn apply_vim_replacement(rep: &str, caps: &Captures) -> String {
 			'\\' => match chars.next() {
 				Some('t') => out.push('\t'),
 				Some('n') => out.push('\n'),
-				Some('\\') => out.push('\\'),
-				Some(d) if d.is_ascii_digit() => {
-					let idx = d.to_digit(10).unwrap() as usize;
-					out.push_str(caps.get(idx).map_or("", |m| m.as_str()));
+				Some(c @ '0'..='9') => {
+					let n = c.to_digit(10).unwrap() as usize;
+					out.push_str(caps.get(n).map_or("", |m| m.as_str()));
 				}
 				Some(c) => {
 					out.push('\\');

@@ -1,7 +1,7 @@
 use iced::Task;
 
 use super::NormalEdit;
-use super::super::coords::{CursorPos, Selection};
+use super::super::coords::{CharIdx, CursorPos, Selection};
 use super::super::core::{CodeEditor, EditorMsg};
 
 impl CodeEditor {
@@ -54,7 +54,7 @@ impl CodeEditor {
 					return Task::none();
 				}
 				let is_w = |c: char| c.is_alphanumeric() || c == '_';
-				let col = origin.col.min(chars.len().saturating_sub(1));
+				let col = *origin.col.min(CharIdx(chars.len().saturating_sub(1)));
 				let mut s = col;
 				while s > 0 && is_w(chars[s - 1]) {
 					s -= 1;
@@ -64,8 +64,8 @@ impl CodeEditor {
 					e += 1;
 				}
 				self.buffer.session.selection = Selection {
-					anchor: CursorPos::new(origin.line, s),
-					head: CursorPos::new(origin.line, e),
+					anchor: CursorPos::new(origin.line, CharIdx(s)),
+					head: CursorPos::new(origin.line, CharIdx(e)),
 				};
 			}
 			"aw" => {
@@ -75,7 +75,7 @@ impl CodeEditor {
 					return Task::none();
 				}
 				let is_w = |c: char| c.is_alphanumeric() || c == '_';
-				let col = origin.col.min(chars.len().saturating_sub(1));
+				let col = *origin.col.min(CharIdx(chars.len().saturating_sub(1)));
 				let mut s = col;
 				while s > 0 && is_w(chars[s - 1]) {
 					s -= 1;
@@ -94,8 +94,8 @@ impl CodeEditor {
 					}
 				}
 				self.buffer.session.selection = Selection {
-					anchor: CursorPos::new(origin.line, s),
-					head: CursorPos::new(origin.line, e),
+					anchor: CursorPos::new(origin.line, CharIdx(s)),
+					head: CursorPos::new(origin.line, CharIdx(e)),
 				};
 			}
 			_ => {
@@ -119,7 +119,7 @@ impl CodeEditor {
 				self.update_status();
 				self.ensure_cursor_visible();
 				if !yanked.is_empty() {
-					return iced::clipboard::write(yanked);
+					return iced::clipboard::write::<EditorMsg>(yanked).map(|_| EditorMsg::Noop);
 				}
 			}
 			'y' => {
@@ -130,7 +130,7 @@ impl CodeEditor {
 				self.update_status();
 				self.ensure_cursor_visible();
 				if !yanked.is_empty() {
-					return iced::clipboard::write(yanked);
+					return iced::clipboard::write::<EditorMsg>(yanked).map(|_| EditorMsg::Noop);
 				}
 			}
 			'c' => {
@@ -172,17 +172,17 @@ impl CodeEditor {
 				let line = self.buffer.session.selection.head.line;
 				let yanked = self.buffer.yank_lines(line, count);
 				self.buffer.delete_lines(line, count);
-				iced::clipboard::write(yanked)
+				iced::clipboard::write::<EditorMsg>(yanked).map(|_| EditorMsg::Noop)
 			}
 			NormalEdit::LineOp { op: 'c', count: _ } => {
 				let line = self.buffer.session.selection.head.line;
 				let len = self.buffer.line_len(line);
 				self.buffer.session.selection = Selection {
-					anchor: CursorPos::new(line, 0),
+					anchor: CursorPos::new(line, CharIdx(0)),
 					head: CursorPos::new(line, len),
 				};
 				let _ = self.buffer.cut();
-				self.buffer.session.selection = Selection::caret(CursorPos::new(line, 0));
+				self.buffer.session.selection = Selection::caret(CursorPos::new(line, CharIdx(0)));
 				let text = self.vim.last_insert_text.clone();
 				for c in text.chars() {
 					self.buffer.insert_char(c);
@@ -206,7 +206,7 @@ impl CodeEditor {
 				for _ in 0..count {
 					let pos = self.buffer.session.selection.head;
 					let lt = self.buffer.line_text(pos.line);
-					if let Some(c) = lt.chars().nth(pos.col) {
+					if let Some(c) = lt.chars().nth(*pos.col) {
 						let toggled = if c.is_uppercase() {
 							c.to_lowercase().next().unwrap_or(c)
 						} else {

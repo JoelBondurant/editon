@@ -2,7 +2,7 @@ use iced::Task;
 use iced::keyboard::{self, Key};
 
 use super::{VimMode, parse_substitute};
-use super::super::coords::CursorPos;
+use super::super::coords::{CharIdx, CursorPos, LineIdx};
 use super::super::core::{CodeEditor, EditorMsg};
 
 impl CodeEditor {
@@ -49,25 +49,27 @@ impl CodeEditor {
 		if let Ok(n) = cmd.parse::<usize>() {
 			let line = n
 				.saturating_sub(1)
-				.min(self.buffer.line_count().saturating_sub(1));
-			self.buffer.session.selection.anchor = CursorPos { line, col: 0 };
-			self.buffer.session.selection.head = CursorPos { line, col: 0 };
+				.min(*self.buffer.line_count().saturating_sub(1));
+			let target = LineIdx(line);
+			self.buffer.session.selection.anchor = CursorPos::new(target, CharIdx(0));
+			self.buffer.session.selection.head = CursorPos::new(target, CharIdx(0));
 			self.ensure_cursor_visible();
 			return;
 		}
 
 		if let Some((first, last, pat, rep, global, icase)) = parse_substitute(
 			&cmd,
-			self.buffer.session.selection.head.line,
-			self.buffer.line_count().saturating_sub(1),
+			*self.buffer.session.selection.head.line,
+			*self.buffer.line_count().saturating_sub(1),
 		) {
 			let changed = self
 				.buffer
-				.substitute(first, last, &pat, &rep, global, icase);
+				.substitute(LineIdx(first), LineIdx(last), &pat, &rep, global, icase);
 			if changed > 0 {
-				let line = first.min(self.buffer.line_count().saturating_sub(1));
-				self.buffer.session.selection.anchor = CursorPos { line, col: 0 };
-				self.buffer.session.selection.head = CursorPos { line, col: 0 };
+				let line = first.min(*self.buffer.line_count().saturating_sub(1));
+				let target = LineIdx(line);
+				self.buffer.session.selection.anchor = CursorPos::new(target, CharIdx(0));
+				self.buffer.session.selection.head = CursorPos::new(target, CharIdx(0));
 				self.ensure_cursor_visible();
 			}
 			self.update_status();

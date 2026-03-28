@@ -1,11 +1,12 @@
 use ropey::Rope;
+use crate::editor::coords::{CharIdx, LineIdx};
 
 /// A single search match in the document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchMatch {
-	pub line: usize,
-	pub col_start: usize,
-	pub col_end: usize,
+	pub line: LineIdx,
+	pub col_start: CharIdx,
+	pub col_end: CharIdx,
 	/// Char index into the rope for the start of the match.
 	pub char_start: usize,
 	pub char_end: usize,
@@ -50,10 +51,10 @@ impl SearchState {
 			return;
 		}
 
-		for line in 0..rope.len_lines() {
-			let line_char_start = rope.line_to_char(line);
+		for line_idx in 0..rope.len_lines() {
+			let line_char_start = rope.line_to_char(line_idx);
 			let line_text: String = rope
-				.line(line)
+				.line(line_idx)
 				.chars()
 				.filter(|&ch| ch != '\n' && ch != '\r')
 				.collect();
@@ -72,9 +73,9 @@ impl SearchState {
 					let char_start = line_char_start + start;
 					let char_end = char_start + query_len;
 					self.matches.push(SearchMatch {
-						line,
-						col_start: start,
-						col_end: start + query_len,
+						line: LineIdx(line_idx),
+						col_start: CharIdx(start),
+						col_end: CharIdx(start + query_len),
 						char_start,
 						char_end,
 					});

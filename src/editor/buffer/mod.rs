@@ -1,4 +1,4 @@
 mod core;
 mod state;
 
-pub use core::{BracketPair, Buffer, TokenSpan};
+pub use core::{Buffer, TokenSpan};

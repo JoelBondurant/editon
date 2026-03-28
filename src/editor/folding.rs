@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
+use super::coords::LineIdx;
 use super::highlight::SyntaxLanguage;
 
 /// A foldable region in the document.
 #[derive(Debug, Clone)]
 pub struct FoldRegion {
-	pub start_line: usize,
-	pub end_line: usize,
+	pub start_line: LineIdx,
+	pub end_line: LineIdx,
 	pub kind: FoldKind,
 }
 
@@ -28,9 +29,9 @@ const SQL_STATEMENT_KEYWORDS: &[&str] = &[
 /// Manages fold state for the editor.
 pub struct FoldState {
 	/// Detected foldable regions (start_line → region).
-	pub regions: BTreeMap<usize, FoldRegion>,
+	pub regions: BTreeMap<LineIdx, FoldRegion>,
 	/// Lines that are currently collapsed (start_line of the fold).
-	pub collapsed: BTreeMap<usize, usize>, // start_line → end_line
+	pub collapsed: BTreeMap<LineIdx, LineIdx>, // start_line → end_line
 }
 
 impl FoldState {
@@ -46,8 +47,8 @@ impl FoldState {
 		&mut self,
 		tree: Option<&tree_sitter::Tree>,
 		language: SyntaxLanguage,
-		line_count: usize,
-		line_text: &mut dyn FnMut(usize) -> String,
+		line_count: LineIdx,
+		line_text: &mut dyn FnMut(LineIdx) -> String,
 	) {
 		self.regions.clear();
 
@@ -76,11 +77,12 @@ impl FoldState {
 	/// the next statement keyword / end of file.
 	fn detect_sql_statement_folds(
 		&mut self,
-		line_count: usize,
-		line_text: &mut dyn FnMut(usize) -> String,
+		line_count: LineIdx,
+		line_text: &mut dyn FnMut(LineIdx) -> String,
 	) {
 		// Find every line that starts a new top-level statement.
-		let starts: Vec<usize> = (0..line_count)
+		let starts: Vec<LineIdx> = (0..*line_count)
+			.map(LineIdx)
 			.filter(|&i| is_sql_statement_start(&line_text(i)))
 			.collect();
 
@@ -93,11 +95,11 @@ impl FoldState {
 			// of this statement, skipping trailing blank lines and comments
 			// (which belong to the next statement, not this one).
 			let mut end = start + 1;
-			for li in (start + 1..search_end).rev() {
-				let text = line_text(li);
+			for li in (*start + 1..*search_end).rev() {
+				let text = line_text(LineIdx(li));
 				let t = text.trim();
 				if !t.is_empty() && !t.starts_with("--") {
-					end = li;
+					end = LineIdx(li);
 					break;
 				}
 			}
@@ -134,9 +136,10 @@ impl FoldState {
 				}
 			};
 
-			self.regions.entry(start.row).or_insert(FoldRegion {
-				start_line: start.row,
-				end_line: end.row,
+			let row = LineIdx(start.row);
+			self.regions.entry(row).or_insert(FoldRegion {
+				start_line: row,
+				end_line: LineIdx(end.row),
 				kind,
 			});
 		}
@@ -150,10 +153,10 @@ impl FoldState {
 
 	fn detect_indent_folds(
 		&mut self,
-		line_count: usize,
-		line_text: &mut dyn FnMut(usize) -> String,
+		line_count: LineIdx,
+		line_text: &mut dyn FnMut(LineIdx) -> String,
 	) {
-		let mut i = 0;
+		let mut i = LineIdx(0);
 		while i < line_count {
 			let text = line_text(i);
 			let base_indent = indent_level(&text);
@@ -175,12 +178,12 @@ impl FoldState {
 				end += 1;
 			}
 
-			if end > i + 2 && !self.regions.contains_key(&i) {
+			if *end > *i + 2 && !self.regions.contains_key(&i) {
 				self.regions.insert(
 					i,
 					FoldRegion {
 						start_line: i,
-						end_line: end - 1,
+						end_line: end.saturating_sub(1),
 						kind: FoldKind::Indent,
 					},
 				);
@@ -190,7 +193,7 @@ impl FoldState {
 	}
 
 	/// Toggle fold at a given line.
-	pub fn toggle(&mut self, line: usize) {
+	pub fn toggle(&mut self, line: LineIdx) {
 		if self.collapsed.contains_key(&line) {
 			self.collapsed.remove(&line);
 		} else if let Some(region) = self.regions.get(&line) {
@@ -199,7 +202,7 @@ impl FoldState {
 	}
 
 	/// Check if a line is hidden (inside a collapsed fold).
-	pub fn is_hidden(&self, line: usize) -> bool {
+	pub fn is_hidden(&self, line: LineIdx) -> bool {
 		for (&start, &end) in &self.collapsed {
 			if line > start && line <= end {
 				return true;
@@ -209,29 +212,29 @@ impl FoldState {
 	}
 
 	/// Check if a line is the start of a collapsed fold.
-	pub fn is_collapsed_start(&self, line: usize) -> bool {
+	pub fn is_collapsed_start(&self, line: LineIdx) -> bool {
 		self.collapsed.contains_key(&line)
 	}
 
 	/// Check if a line has a foldable region starting here.
-	pub fn is_foldable(&self, line: usize) -> bool {
+	pub fn is_foldable(&self, line: LineIdx) -> bool {
 		self.regions.contains_key(&line)
 	}
 
 	/// Number of hidden lines in a collapsed region starting at `line`.
-	pub fn hidden_count(&self, line: usize) -> usize {
-		self.collapsed.get(&line).map(|end| end - line).unwrap_or(0)
+	pub fn hidden_count(&self, line: LineIdx) -> usize {
+		self.collapsed.get(&line).map(|&end| *end - *line).unwrap_or(0)
 	}
 
-	pub fn apply_regions(&mut self, regions: BTreeMap<usize, FoldRegion>) {
+	pub fn apply_regions(&mut self, regions: BTreeMap<LineIdx, FoldRegion>) {
 		self.regions = regions;
 		self.collapsed
 			.retain(|start, _| self.regions.contains_key(start));
 	}
 
 	/// Map a visible line index to an actual document line, accounting for folds.
-	pub fn visible_to_doc_line(&self, visible: usize, total_lines: usize) -> usize {
-		let mut doc = 0;
+	pub fn visible_to_doc_line(&self, visible: usize, total_lines: LineIdx) -> LineIdx {
+		let mut doc = LineIdx(0);
 		let mut vis = 0;
 		while doc < total_lines && vis < visible {
 			if self.is_hidden(doc) {
@@ -248,8 +251,11 @@ impl FoldState {
 	}
 
 	/// Total number of visible lines.
-	pub fn visible_line_count(&self, total_lines: usize) -> usize {
-		(0..total_lines).filter(|&l| !self.is_hidden(l)).count()
+	pub fn visible_line_count(&self, total_lines: LineIdx) -> usize {
+		(0..*total_lines)
+			.map(LineIdx)
+			.filter(|&l| !self.is_hidden(l))
+			.count()
 	}
 }
 

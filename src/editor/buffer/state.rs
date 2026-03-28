@@ -1,13 +1,13 @@
 use ropey::Rope;
 
 use crate::editor::analysis::Diagnostic;
-use crate::editor::coords::Selection;
+use crate::editor::coords::{CharIdx, Selection};
 use crate::editor::folding::FoldState;
 use crate::editor::highlight::{SyntaxLanguage, SyntaxToken};
 use crate::editor::search::SearchState;
 use crate::editor::wrap::{VisualLine, WrapConfig};
 
-use super::BracketPair;
+use super::core::BracketPair;
 
 pub struct DocumentState {
 	pub rope: Rope,
@@ -26,7 +26,7 @@ pub struct SessionState {
 	pub secondary_selections: Vec<Selection>,
 	pub matched_bracket: Option<BracketPair>,
 	pub search: SearchState,
-	pub(super) desired_col: Option<usize>,
+	pub(super) desired_col: Option<CharIdx>,
 	pub clipboard: String,
 	pub clipboard_is_line: bool,
 }
