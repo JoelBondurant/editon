@@ -436,6 +436,9 @@ impl CodeEditor {
 						}
 						return Task::none();
 					}
+					Key::Named(keyboard::key::Named::F8) if self.vim.mode == VimMode::Off => {
+						return self.execute_command(EditorCommand::NextDiagnostic);
+					}
 					Key::Character(ref ch) if ctrl && ch.as_str() == "w" => {
 						let enabled = !self.buffer.document.wrap_config.enabled;
 						return self.execute_command(EditorCommand::SetWrap(enabled));
@@ -879,6 +882,9 @@ impl CodeEditor {
 				self.buffer.search_replace_all();
 				self.update_status();
 			}
+			EditorCommand::NextDiagnostic => {
+				self.jump_diagnostic(true);
+			}
 
 			EditorCommand::VimSetMode(mode) => {
 				self.vim.mode = mode;
@@ -973,6 +979,45 @@ impl CodeEditor {
 				dc
 			)
 		};
+	}
+
+	fn jump_diagnostic(&mut self, forward: bool) {
+		let diagnostics = &self.buffer.document.diagnostics;
+		if diagnostics.is_empty() {
+			return;
+		}
+
+		let head = self.buffer.session.selection.head;
+		let current = diagnostics.iter().position(|d| {
+			d.line == head.line
+				&& ((d.col_start <= head.col && head.col <= d.col_end)
+					|| head.col < d.col_start)
+		});
+
+		let target = if forward {
+			if let Some(idx) = diagnostics.iter().position(|d| {
+				d.line > head.line || (d.line == head.line && d.col_start > head.col)
+			}) {
+				&diagnostics[idx]
+			} else {
+				&diagnostics[0]
+			}
+		} else if let Some(idx) = diagnostics.iter().rposition(|d| {
+			d.line < head.line || (d.line == head.line && d.col_start < head.col)
+		}) {
+			&diagnostics[idx]
+		} else {
+			diagnostics.last().unwrap()
+		};
+
+		if let Some(_idx) = current {
+			// If already inside a diagnostic, moving should still land on the chosen next/prev target above.
+		}
+
+		self.buffer.session.selection.anchor = CursorPos::new(target.line, target.col_start);
+		self.buffer.session.selection.head = CursorPos::new(target.line, target.col_end);
+		self.ensure_cursor_visible();
+		self.update_status();
 	}
 
 	pub(in crate::editor) fn cursor_visual_line_idx(&self) -> usize {

@@ -20,6 +20,7 @@ pub(in crate::editor) fn handle_normal_key(
 	let ctrl = mods.command();
 	let was_g = vim.pending_g;
 	vim.pending_g = false;
+	let pending_bracket = vim.pending_bracket.take();
 	let was_z = vim.pending_z;
 	vim.pending_z = false;
 
@@ -141,6 +142,15 @@ pub(in crate::editor) fn handle_normal_key(
 					_ => {}
 				}
 			} else {
+				if let Some(bracket) = pending_bracket {
+					match (bracket, ch) {
+						(']', "d") => {
+							return ed.execute_command(super::super::command::EditorCommand::NextDiagnostic);
+						}
+						_ => return Task::none(),
+					}
+				}
+
 				// z-prefix commands: zz / zt / zb
 				if was_z {
 					match ch {
@@ -333,6 +343,10 @@ pub(in crate::editor) fn handle_normal_key(
 							ed.buffer.set_head(target, false);
 							ed.ensure_cursor_visible();
 						}
+					}
+					"[" | "]" => {
+						vim.pending_bracket = ch.chars().next();
+						return Task::none();
 					}
 						":" => vim.open_prompt(PromptKind::Command, VimMode::Normal, ""),
 						"/" => {

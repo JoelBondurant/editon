@@ -61,6 +61,8 @@ pub struct VimHandler {
 	pub(in crate::editor) pending_find: Option<char>,
 	/// Last f/F/t/T find, for ; and , repeat
 	pub(in crate::editor) last_find: Option<(char, char)>,
+	/// Pending [ / ] prefix commands like ]d / [d
+	pub(in crate::editor) pending_bracket: Option<char>,
 	/// Pending z-prefix (zz/zt/zb)
 	pub(in crate::editor) pending_z: bool,
 	/// Pending i/a text-object prefix inside an operator motion
@@ -90,6 +92,7 @@ impl VimHandler {
 			block_insert: None,
 			pending_find: None,
 			last_find: None,
+			pending_bracket: None,
 			pending_z: false,
 			pending_obj_prefix: None,
 			last_edit: None,

@@ -55,6 +55,7 @@ pub enum EditorCommand {
 	SearchPrev,
 	SearchReplaceCurrent,
 	SearchReplaceAll,
+	NextDiagnostic,
 
 	// ─── Vim Specific (Transitionary) ───────────────────────────────────────
 	VimSetMode(VimMode),
