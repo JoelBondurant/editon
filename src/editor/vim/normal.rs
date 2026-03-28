@@ -322,6 +322,18 @@ pub(in crate::editor) fn handle_normal_key(
 							ed.ensure_cursor_visible();
 						}
 					}
+					"%" => {
+						if let Some(pair) = ed.buffer.session.matched_bracket {
+							let head = ed.buffer.session.selection.head;
+							let target = if head.line == pair.open_line && head.col == pair.open_col {
+								CursorPos::new(pair.close_line, pair.close_col)
+							} else {
+								CursorPos::new(pair.open_line, pair.open_col)
+							};
+							ed.buffer.set_head(target, false);
+							ed.ensure_cursor_visible();
+						}
+					}
 						":" => vim.open_prompt(PromptKind::Command, VimMode::Normal, ""),
 						"/" => {
 							vim.saved_search = Some(ed.buffer.session.search.clone());

@@ -420,6 +420,22 @@ impl CodeEditor {
 						let l = self.buffer.session.selection.head.line;
 						return self.execute_command(EditorCommand::ToggleFold(l));
 					}
+					Key::Character(ref ch)
+						if ctrl && ch.as_str() == "]" && self.vim.mode == VimMode::Off =>
+					{
+						if let Some(pair) = self.buffer.session.matched_bracket {
+							let head = self.buffer.session.selection.head;
+							let target = if head.line == pair.open_line && head.col == pair.open_col {
+								CursorPos::new(pair.close_line, pair.close_col)
+							} else {
+								CursorPos::new(pair.open_line, pair.open_col)
+							};
+							self.buffer.set_head(target, false);
+							self.update_status();
+							self.ensure_cursor_visible();
+						}
+						return Task::none();
+					}
 					Key::Character(ref ch) if ctrl && ch.as_str() == "w" => {
 						let enabled = !self.buffer.document.wrap_config.enabled;
 						return self.execute_command(EditorCommand::SetWrap(enabled));
