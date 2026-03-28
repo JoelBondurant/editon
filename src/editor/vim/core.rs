@@ -41,7 +41,7 @@ pub fn parse_substitute(
 	cmd: &str,
 	current_line: usize,
 	last_line: usize,
-) -> Option<(usize, usize, String, String, bool, bool)> {
+) -> Option<(usize, usize, String, String, bool, bool, bool)> {
 	let mut i = 0;
 	let bytes = cmd.as_bytes();
 	while i < bytes.len() && matches!(bytes[i], b'0'..=b'9' | b'%' | b'.' | b'$' | b',') {
@@ -66,6 +66,7 @@ pub fn parse_substitute(
 	let (first, last) = parse_vim_range(range_str, current_line, last_line);
 	let global = flags.contains('g');
 	let icase = flags.contains('i');
+	let confirm = flags.contains('c');
 	Some((
 		first,
 		last,
@@ -73,6 +74,7 @@ pub fn parse_substitute(
 		replacement.to_string(),
 		global,
 		icase,
+		confirm,
 	))
 }
 

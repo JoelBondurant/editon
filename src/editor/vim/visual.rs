@@ -3,7 +3,7 @@ use iced::keyboard::{self, Key};
 
 use super::super::coords::{CharIdx, CursorPos, Selection};
 use super::super::core::{CodeEditor, EditorMsg};
-use super::{VimHandler, VimMode};
+use super::{PromptKind, VimHandler, VimMode};
 
 // ─── Visual mode ──────────────────────────────────────────────────────────
 
@@ -60,11 +60,42 @@ pub(in crate::editor) fn handle_visual_key(
 			};
 			if ctrl {
 				match ch {
-					"f" | "F" => ed.buffer.search_open(),
+					"f" | "F" => {
+						vim.saved_search = Some(ed.buffer.session.search.clone());
+						let initial = if ed.buffer.session.search.query.is_empty() {
+							let sel = ed.buffer.selected_text();
+							if sel.contains('\n') { String::new() } else { sel }
+						} else {
+							ed.buffer.session.search.query.clone()
+						};
+						vim.open_prompt(PromptKind::SearchForward, VimMode::Normal, initial);
+						if !vim.command.is_empty() {
+							ed.buffer.search_activate(&vim.command, true);
+						}
+						return Task::none();
+					}
 					_ => {}
 				}
 			} else {
 				match ch {
+					"/" => {
+						vim.saved_search = Some(ed.buffer.session.search.clone());
+						let initial = if ed.buffer.session.search.query.is_empty() {
+							let sel = ed.buffer.selected_text();
+							if sel.contains('\n') { String::new() } else { sel }
+						} else {
+							ed.buffer.session.search.query.clone()
+						};
+						vim.open_prompt(PromptKind::SearchForward, VimMode::Normal, initial);
+						if !vim.command.is_empty() {
+							ed.buffer.search_activate(&vim.command, true);
+						}
+						return Task::none();
+					}
+					":" => {
+						vim.open_prompt(PromptKind::Command, VimMode::Normal, "");
+						return Task::none();
+					}
 					"h" => {
 						for _ in 0..count {
 							ed.buffer.move_left(true);

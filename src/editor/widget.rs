@@ -66,6 +66,7 @@ pub struct EditorWidget<'a, Message> {
 	show_minimap: bool,
 	block_cursor: bool,
 	show_whitespace: bool,
+	show_search_panel: bool,
 	/// Visual block selection: (top_line, bottom_line, left_col, right_col inclusive)
 	visual_block: Option<(LineIdx, LineIdx, CharIdx, CharIdx)>,
 }
@@ -85,6 +86,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			show_minimap: true,
 			block_cursor: false,
 			show_whitespace: true,
+			show_search_panel: true,
 			visual_block: None,
 		}
 	}
@@ -107,6 +109,10 @@ impl<'a, Message> EditorWidget<'a, Message> {
 	}
 	pub fn show_whitespace(mut self, v: bool) -> Self {
 		self.show_whitespace = v;
+		self
+	}
+	pub fn show_search_panel(mut self, v: bool) -> Self {
+		self.show_search_panel = v;
 		self
 	}
 	pub fn visual_block(mut self, v: Option<(LineIdx, LineIdx, CharIdx, CharIdx)>) -> Self {
@@ -239,7 +245,7 @@ impl<'a, Message> EditorWidget<'a, Message> {
 			self.draw_minimap(renderer, b, editor_h);
 		}
 		self.draw_scrollbar(renderer, b, editor_h);
-		if self.buffer.session.search.is_open {
+		if self.show_search_panel && self.buffer.session.search.is_open {
 			self.draw_search_panel(renderer, b);
 		}
 	}
@@ -1408,6 +1414,7 @@ pub const fn scrollbar_width() -> f32 {
 pub const fn minimap_width() -> f32 {
 	MINIMAP_W
 }
+#[allow(dead_code)]
 pub const fn search_panel_height() -> f32 {
 	SEARCH_PANEL_H
 }

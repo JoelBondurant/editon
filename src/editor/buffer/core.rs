@@ -1509,6 +1509,23 @@ impl Buffer {
 		self.session.search.find_all(&self.document.rope);
 	}
 
+	pub fn search_activate(&mut self, query: &str, forward: bool) {
+		self.session.search.is_open = true;
+		self.session.search.query = query.to_string();
+		self.session.search.find_all(&self.document.rope);
+		let ci = self.pos_to_char(self.session.selection.head);
+		if forward {
+			self.session.search.jump_to_nearest(ci);
+		} else if !self.session.search.matches.is_empty() {
+			let n = self.session.search.matches.len();
+			self.session.search.current_match = (0..n)
+				.rev()
+				.find(|&i| self.session.search.matches[i].char_start < ci)
+				.unwrap_or(n - 1);
+		}
+		self.jump_to_current_match();
+	}
+
 	pub fn search_next(&mut self) {
 		self.session.search.next_match();
 		self.jump_to_current_match();
@@ -2272,9 +2289,15 @@ impl Buffer {
 		}
 		changed
 	}
+
+	pub fn replace_char_range(&mut self, start: usize, end: usize, replacement: &str) {
+		self.save_undo(EditKind::Other);
+		self.replace_range(start, end, replacement);
+		self.post_edit();
+	}
 }
 
-fn apply_vim_replacement(rep: &str, caps: &Captures) -> String {
+pub(crate) fn apply_vim_replacement(rep: &str, caps: &Captures) -> String {
 	let mut out = String::new();
 	let mut chars = rep.chars().peekable();
 	while let Some(ch) = chars.next() {

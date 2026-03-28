@@ -1,7 +1,7 @@
 use iced::Task;
 use iced::keyboard::{self, Key};
 
-use super::{NormalEdit, VimHandler, VimMode};
+use super::{NormalEdit, PromptKind, VimHandler, VimMode};
 use super::super::coords::{CharIdx, CursorPos, LineIdx, Selection};
 use super::super::core::{CodeEditor, EditorMsg};
 use super::super::widget;
@@ -110,7 +110,22 @@ pub(in crate::editor) fn handle_normal_key(
 
 			if ctrl {
 				match ch {
-					"f" | "F" => ed.buffer.search_open(),
+					"f" | "F" => {
+						if vim.saved_search.is_none() {
+							vim.saved_search = Some(ed.buffer.session.search.clone());
+						}
+						let initial = if ed.buffer.session.search.query.is_empty() {
+							let sel = ed.buffer.selected_text();
+							if sel.contains('\n') { String::new() } else { sel }
+						} else {
+							ed.buffer.session.search.query.clone()
+						};
+						vim.open_prompt(PromptKind::SearchForward, VimMode::Normal, initial);
+						if !vim.command.is_empty() {
+							ed.buffer.search_activate(&vim.command, true);
+						}
+						return Task::none();
+					}
 					"w" | "W" => {
 						let e = !ed.buffer.document.wrap_config.enabled;
 						ed.set_wrap_enabled(e);
@@ -307,7 +322,21 @@ pub(in crate::editor) fn handle_normal_key(
 							ed.ensure_cursor_visible();
 						}
 					}
-					":" => vim.mode = VimMode::Command,
+						":" => vim.open_prompt(PromptKind::Command, VimMode::Normal, ""),
+						"/" => {
+							vim.saved_search = Some(ed.buffer.session.search.clone());
+							let initial = if ed.buffer.session.search.query.is_empty() {
+								let sel = ed.buffer.selected_text();
+								if sel.contains('\n') { String::new() } else { sel }
+							} else {
+								ed.buffer.session.search.query.clone()
+							};
+							vim.open_prompt(PromptKind::SearchForward, VimMode::Normal, initial);
+							if !vim.command.is_empty() {
+								ed.buffer.search_activate(&vim.command, true);
+							}
+							return Task::none();
+						}
 					"h" => {
 						for _ in 0..count {
 							ed.buffer.move_left(false);

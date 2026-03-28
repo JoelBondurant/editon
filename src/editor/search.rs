@@ -13,6 +13,7 @@ pub struct SearchMatch {
 }
 
 /// Search state, kept separate from the buffer so the widget can query it.
+#[derive(Clone)]
 pub struct SearchState {
 	pub query: String,
 	pub replacement: String,

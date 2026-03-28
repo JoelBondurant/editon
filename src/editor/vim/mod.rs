@@ -10,14 +10,48 @@ use self::visual::{handle_visual_key, handle_visual_block_key};
 
 use super::coords::{CharIdx, LineIdx};
 use super::core::{CodeEditor, EditorMsg};
+use super::search::SearchState;
 use iced::Task;
 use iced::keyboard::{self, Key};
 
 pub use self::core::{NormalEdit, VimMode, parse_substitute};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptKind {
+	Command,
+	SearchForward,
+	SubstituteConfirm,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfirmSubstituteMatch {
+	pub line: LineIdx,
+	pub col_start: CharIdx,
+	pub col_end: CharIdx,
+	pub char_start: usize,
+	pub char_end: usize,
+	pub replacement: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfirmSubstituteState {
+	pub last: LineIdx,
+	pub pattern: String,
+	pub replacement: String,
+	pub global: bool,
+	pub case_insensitive: bool,
+	pub next_line: LineIdx,
+	pub next_col: CharIdx,
+	pub current: Option<ConfirmSubstituteMatch>,
+}
+
 pub struct VimHandler {
 	pub mode: VimMode,
 	pub(in crate::editor) command: String,
+	pub(in crate::editor) prompt_kind: PromptKind,
+	pub(in crate::editor) return_mode: Option<VimMode>,
+	pub(in crate::editor) saved_search: Option<SearchState>,
+	pub(in crate::editor) confirm_substitute: Option<ConfirmSubstituteState>,
 	pub(in crate::editor) count: String,
 	pub(in crate::editor) pending_g: bool,
 	pub(in crate::editor) pending_op: Option<char>,
@@ -46,6 +80,10 @@ impl VimHandler {
 		Self {
 			mode: VimMode::Normal,
 			command: String::new(),
+			prompt_kind: PromptKind::Command,
+			return_mode: None,
+			saved_search: None,
+			confirm_substitute: None,
 			count: String::new(),
 			pending_g: false,
 			pending_op: None,
@@ -65,6 +103,26 @@ impl VimHandler {
 		let n = self.count.parse::<usize>().unwrap_or(1).max(1);
 		self.count.clear();
 		n
+	}
+
+	pub fn open_prompt(
+		&mut self,
+		kind: PromptKind,
+		return_mode: VimMode,
+		initial_text: impl Into<String>,
+	) {
+		self.prompt_kind = kind;
+		self.return_mode = Some(return_mode);
+		self.command = initial_text.into();
+		self.mode = VimMode::Command;
+	}
+
+	pub fn close_prompt(&mut self) {
+		self.mode = self.return_mode.take().unwrap_or(VimMode::Normal);
+		self.command.clear();
+		self.saved_search = None;
+		self.confirm_substitute = None;
+		self.prompt_kind = PromptKind::Command;
 	}
 
 	pub fn handle_key(
@@ -141,6 +199,7 @@ impl VimHandler {
 
 	pub(in crate::editor) fn enter_insert_mode(&mut self, ed: &mut CodeEditor) {
 		self.mode = VimMode::Insert;
+		self.return_mode = None;
 		self.insert_enter_col = ed.buffer.session.selection.head.col;
 		self.insert_enter_line = ed.buffer.session.selection.head.line;
 		self.last_insert_text.clear();

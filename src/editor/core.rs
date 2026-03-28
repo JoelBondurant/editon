@@ -9,7 +9,7 @@ use super::coords::{CharIdx, CursorPos, LineIdx, line};
 use super::highlight::SyntaxLanguage;
 use super::theme::EditorTheme;
 use super::undo::UndoConfig;
-use super::vim::{VimHandler, VimMode};
+use super::vim::{PromptKind, VimHandler, VimMode};
 use super::widget;
 use super::widget::{EditorAction, EditorWidget};
 
@@ -326,6 +326,38 @@ impl CodeEditor {
 							self.set_vim_enabled(self.vim.mode == VimMode::Off);
 							return Task::none();
 						}
+						if ch.eq_ignore_ascii_case("f")
+							&& matches!(self.vim.mode, VimMode::Off | VimMode::Insert)
+						{
+							self.vim.saved_search = Some(self.buffer.session.search.clone());
+							let initial = if self.buffer.session.search.query.is_empty() {
+								let sel = self.buffer.selected_text();
+								if sel.contains('\n') {
+									String::new()
+								} else {
+									sel
+								}
+							} else {
+								self.buffer.session.search.query.clone()
+							};
+							let return_mode = self.vim.mode.clone();
+							self.vim
+								.open_prompt(PromptKind::SearchForward, return_mode, initial);
+							if !self.vim.command.is_empty() {
+								self.buffer.search_activate(&self.vim.command, true);
+							}
+							self.update_status();
+							return Task::none();
+						}
+						if mods.shift()
+							&& ch.eq_ignore_ascii_case("h")
+							&& matches!(self.vim.mode, VimMode::Off | VimMode::Insert)
+						{
+							let return_mode = self.vim.mode.clone();
+							self.vim.open_prompt(PromptKind::Command, return_mode, "%s/");
+							self.update_status();
+							return Task::none();
+						}
 					}
 				}
 
@@ -348,36 +380,12 @@ impl CodeEditor {
 				let ctrl = mods.command();
 				let alt = mods.alt();
 
-				if self.buffer.session.search.is_open {
-					match key {
-						Key::Named(keyboard::key::Named::Escape) => {
-							return self.execute_command(EditorCommand::SearchClose);
-						}
-						Key::Named(keyboard::key::Named::Enter) if ctrl && shift => {
-							return self.execute_command(EditorCommand::SearchReplaceAll);
-						}
-						Key::Named(keyboard::key::Named::Enter) if shift => {
-							return self.execute_command(EditorCommand::SearchPrev);
-						}
-						Key::Named(keyboard::key::Named::Enter) => {
-							return self.execute_command(EditorCommand::SearchNext);
-						}
-						_ => {}
-					}
-				}
-
 				match key {
 					Key::Character(ref ch) if ctrl && alt && ch.eq_ignore_ascii_case("k") => {
 						self.buffer.add_caret_above();
 					}
 					Key::Character(ref ch) if ctrl && alt && ch.eq_ignore_ascii_case("j") => {
 						self.buffer.add_caret_below();
-					}
-					Key::Character(ref ch) if ctrl && ch.as_str() == "f" => {
-						return self.execute_command(EditorCommand::SearchOpen);
-					}
-					Key::Character(ref ch) if ctrl && shift && ch.as_str() == "h" => {
-						return self.execute_command(EditorCommand::SearchReplaceCurrent);
 					}
 					Key::Character(ref ch) if ctrl && shift && ch.as_str() == "[" => {
 						let l = self.buffer.session.selection.head.line;
@@ -485,12 +493,7 @@ impl CodeEditor {
 			}
 
 			EditorMsg::Scroll(dx, dy) => {
-				let sp = if self.buffer.session.search.is_open {
-					widget::search_panel_height()
-				} else {
-					0.0
-				};
-				let eh = self.view.viewport_h - sp;
+				let eh = self.view.viewport_h;
 				let vl_count = self.buffer.document.visual_lines.len();
 				let max_y = (vl_count as f32 * widget::line_height() + widget::top_pad() * 2.0
 					- eh)
@@ -532,6 +535,7 @@ impl CodeEditor {
 			.scroll_x(self.view.scroll_x)
 			.show_minimap(self.view.show_minimap)
 			.show_whitespace(self.view.show_whitespace)
+			.show_search_panel(false)
 			.block_cursor(self.vim.mode != VimMode::Insert && self.vim.mode != VimMode::Off)
 			.visual_block(visual_block);
 
@@ -573,9 +577,13 @@ impl CodeEditor {
 		.clip(true);
 
 		let cmd_bar_color = self.theme.cmdbar_text;
+		let prompt_prefix = match self.vim.prompt_kind {
+			PromptKind::Command | PromptKind::SubstituteConfirm => ":",
+			PromptKind::SearchForward => "/",
+		};
 		let cmd_bar = container(
 			row![
-				text(":").size(14).color(cmd_bar_color),
+				text(prompt_prefix).size(14).color(cmd_bar_color),
 				text(&self.vim.command).size(14).color(cmd_bar_color),
 				text("█").size(14).color(iced::Color {
 					a: 0.7,
@@ -946,12 +954,7 @@ impl CodeEditor {
 	}
 
 	pub(in crate::editor) fn ensure_cursor_visible(&mut self) {
-		let sp = if self.buffer.session.search.is_open {
-			widget::search_panel_height()
-		} else {
-			0.0
-		};
-		let vh = self.view.viewport_h - widget::top_pad() * 2.0 - sp;
+		let vh = self.view.viewport_h - widget::top_pad() * 2.0;
 		if vh < 1.0 {
 			return;
 		}
